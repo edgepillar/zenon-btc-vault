@@ -13,11 +13,11 @@ python3 -B -m unittest discover -s tests -v
 python3 -B regtest.py --bitcoind path/to/bitcoind --datadir path/to/empty-directory
 ```
 
-The fixture funds a P2WSH vault and gives a pre-signed transaction with a fixed destination and amount to a local mock release backend. The mock releases it after checking the synthetic withdrawal claim. The run exercises invalid claim rejection, Bitcoin confirmation of the fixed spend, rejection of a changed output and a second spend of the same UTXO, and a separate vault's `OP_CHECKLOCKTIMEVERIFY` refund.
+The fixture funds a P2WSH vault and registers one pre-signed release transaction. Setup checks the input outpoint, payout, immediate release branch, and `SIGHASH_ALL` signature, then asks Bitcoin Core to validate the spend against the current UTXO and mempool. The mock returns only the stored bytes for an exact synthetic withdrawal match. The run checks that registration rejects an otherwise valid spend of another vault. It also checks the confirmed payout, rejection of an altered output and rebroadcast of the confirmed transaction, and a separate vault's `OP_CHECKLOCKTIMEVERIFY` refund.
 
 ## Trust and scope
 
-The mock holds an already signed transaction in cleartext and controls its release inside the test process. The fixture exercises the release interface and Bitcoin transaction constraints. Witness encryption, confidential setup, and verification of Zenon state or consensus finality remain open. A future proof backend can implement the same release boundary with an authenticated, deposit-specific withdrawal statement.
+The mock holds an already signed transaction in cleartext and controls its release inside the test process. The registration uses trusted setup data and Bitcoin Core's local acceptance policy at the time of registration. The fixture exercises the release interface and Bitcoin transaction constraints. Witness encryption, confidential setup, and verification of Zenon state or consensus finality remain open. A future proof backend can implement the same release boundary with an authenticated, deposit-specific withdrawal statement.
 
 The fixed-output spend covers a single known recipient. A transferable BTC peg would also need accounting, recipient selection and refund reconciliation. The test uses regtest fees and synthetic funds to exercise the transaction flow. Production proving, storage and fee costs remain unmeasured.
 

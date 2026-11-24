@@ -14,7 +14,7 @@ import socket
 import subprocess
 import time
 
-from mock_release import ReleaseRefused, Withdrawal, release_signed_transaction
+from mock_release import RegisteredRelease, ReleaseRefused, Withdrawal
 
 
 COIN = 100_000_000
@@ -154,18 +154,53 @@ def presign(rpc, outpoint, recipient, private_descriptor, locktime):
     raw = signed["hex"]
     decoded = rpc.call("decoderawtransaction", raw)
     tx_input, = decoded["vin"]
-    witness = tx_input["txinwitness"]
+    check_vault_witness(tx_input, "" if locktime else "01")
+    return raw
+
+
+def check_vault_witness(tx_input, selector):
+    witness = tx_input.get("txinwitness", [])
     require(
-        len(witness) == 3 and witness[1] == ("" if locktime else "01"),
+        len(witness) == 3 and witness[1] == selector,
         "The transaction must select the expected vault branch",
     )
     require(witness[0].endswith("01"), "The vault signature must use SIGHASH_ALL")
-    return raw
 
 
 def mempool_result(rpc, raw):
     result, = rpc.call("testmempoolaccept", [raw])
     return result
+
+
+def register_release(rpc, withdrawal, signed_transaction):
+    """Check a signed release against the funded vault before the mock holds it."""
+    candidate = RegisteredRelease(withdrawal, signed_transaction)
+    decoded = rpc.call("decoderawtransaction", candidate.signed_transaction)
+    require(
+        len(decoded["vin"]) == len(decoded["vout"]) == 1,
+        "Release must have one input and one output",
+    )
+    tx_input = decoded["vin"][0]
+    payout = decoded["vout"][0]
+    require(
+        (tx_input.get("txid"), tx_input.get("vout")) == (withdrawal.txid, withdrawal.vout),
+        "Release outpoint does not match the withdrawal",
+    )
+    require(
+        payout["value"] * COIN == withdrawal.amount_sats,
+        "Release amount does not match the withdrawal",
+    )
+    require(
+        payout["scriptPubKey"]["hex"] == withdrawal.recipient_script_pubkey,
+        "Release recipient does not match the withdrawal",
+    )
+    require(decoded["locktime"] == 0, "Release must be immediately spendable")
+    check_vault_witness(tx_input, "01")
+    require(
+        mempool_result(rpc, candidate.signed_transaction)["allowed"],
+        "Bitcoin Core rejected the registered spend",
+    )
+    return candidate
 
 
 def mutate_recipient(raw, original_script, replacement_script):
@@ -218,25 +253,44 @@ def run_controls(rpc):
         recipient_script_pubkey=recipient_script,
         **release_outpoint,
     )
+    registered = register_release(rpc, expected, release_raw)
+    other_raw = presign(
+        rpc, refund_outpoint, recipient,
+        vault_descriptor(release_wif, refund_pub, refund_height), locktime=0,
+    )
+    require(
+        mempool_result(rpc, other_raw)["allowed"],
+        "The other vault's release must be independently valid",
+    )
+    try:
+        register_release(rpc, expected, other_raw)
+    except RegtestError as exc:
+        if str(exc) != "Release outpoint does not match the withdrawal":
+            raise
+    else:
+        raise RegtestError("The registry accepted a valid spend of the wrong vault")
+    print("PASS: registration rejects an independently valid spend of the wrong vault")
+
     for wrong in (
         replace(expected, amount_sats=PAYMENT_SATS - 1),
         replace(expected, recipient_script_pubkey=alternate_script),
         replace(expected, **refund_outpoint),
     ):
         try:
-            release_signed_transaction(expected, wrong, release_raw)
+            registered.release_signed_transaction(wrong)
         except ReleaseRefused:
             continue
         raise RegtestError("The mock gate disclosed the signature for a mismatched claim")
     print("PASS: mock gate rejects a mismatched amount, recipient, or outpoint")
 
-    opened = release_signed_transaction(expected, expected, release_raw)
+    opened = registered.release_signed_transaction(expected)
+    require(opened == release_raw, "The gate must return the originally registered transaction")
     require(mempool_result(rpc, opened)["allowed"], "The fixed-output release was rejected")
     modified = mutate_recipient(opened, recipient_script, alternate_script)
     require(not mempool_result(rpc, modified)["allowed"], "The altered recipient was accepted")
     confirm_spend(rpc, opened, release_outpoint, recipient_script, miner)
     require(not mempool_result(rpc, opened)["allowed"], "A confirmed vault spend was accepted again")
-    print("PASS: fixed-output payout confirmed, altered output and repeat spend rejected")
+    print("PASS: fixed-output payout confirmed and altered output and rebroadcast rejected")
 
     refund_raw = presign(
         rpc, refund_outpoint, alternate,
