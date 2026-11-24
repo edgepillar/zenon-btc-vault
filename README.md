@@ -11,9 +11,12 @@ The unit tests require Python 3.9 or later. The integration runner uses Bitcoin 
 ```sh
 python3 -B -m unittest discover -s tests -v
 python3 -B regtest.py --bitcoind path/to/bitcoind --datadir path/to/empty-directory
+python3 -B regtest_fee_paths.py --bitcoind path/to/bitcoind --datadir path/to/second-empty-directory
 ```
 
 The fixture funds a P2WSH vault and registers one pre-signed release transaction. Setup checks the input outpoint, payout, immediate release branch, and `SIGHASH_ALL` signature, then asks Bitcoin Core to validate the spend against the current UTXO and mempool. The mock returns only the stored bytes for an exact synthetic withdrawal match. The run checks that registration rejects an otherwise valid spend of another vault. It also checks the confirmed payout, rejection of an altered output and rebroadcast of the confirmed transaction, and a separate vault's `OP_CHECKLOCKTIMEVERIFY` refund.
+
+The separate fee fixture exercises recipient-paid child-pays-for-parent (CPFP) and two competing spends at refund maturity. A zero-fee release fails standalone mempool admission. A recipient-signed fee child pays for the package. In separate funded vaults, the fixture demonstrates each replacement order and checks which transactions are mined. These are local Bitcoin Core 32.1 policy observations in an isolated regtest node. Relay and confirmation on other networks depend on node and miner policy.
 
 ## Trust and scope
 
