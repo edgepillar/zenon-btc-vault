@@ -1,7 +1,7 @@
 import unittest
 from dataclasses import FrozenInstanceError, replace
 
-from mock_release import ReleaseRefused, Withdrawal, release_signed_transaction
+from mock_release import RegisteredRelease, ReleaseRefused, Withdrawal
 
 
 class MockReleaseTests(unittest.TestCase):
@@ -17,8 +17,9 @@ class MockReleaseTests(unittest.TestCase):
         )
 
     def test_accepts_equal_records_and_preserves_hex(self):
+        registered = RegisteredRelease(self.withdrawal, "01aB")
         self.assertEqual(
-            release_signed_transaction(self.withdrawal, replace(self.withdrawal), "01aB"),
+            registered.release_signed_transaction(replace(self.withdrawal)),
             "01aB",
         )
 
@@ -30,7 +31,7 @@ class MockReleaseTests(unittest.TestCase):
         for vout, amount in ((0, 1), (2**32 - 1, 2_100_000_000_000_000)):
             with self.subTest(vout=vout, amount=amount):
                 claim = replace(self.withdrawal, vout=vout, amount_sats=amount)
-                self.assertEqual(release_signed_transaction(claim, claim, "00"), "00")
+                self.assertEqual(RegisteredRelease(claim, "00").release_signed_transaction(claim), "00")
 
     def test_refuses_a_mismatch_in_each_field(self):
         changes = {
@@ -42,10 +43,11 @@ class MockReleaseTests(unittest.TestCase):
             "amount_sats": 100_001,
             "recipient_script_pubkey": "52",
         }
+        registered = RegisteredRelease(self.withdrawal, "01ab")
         for field, value in changes.items():
             with self.subTest(field=field), self.assertRaises(ReleaseRefused):
                 supplied = replace(self.withdrawal, **{field: value})
-                release_signed_transaction(self.withdrawal, supplied, "01ab")
+                registered.release_signed_transaction(supplied)
 
     def test_refuses_noncanonical_withdrawal_fields(self):
         invalid_fields = {
@@ -65,8 +67,18 @@ class MockReleaseTests(unittest.TestCase):
     def test_refuses_invalid_signed_transaction_hex(self):
         for value in ("", " ", "1", "0x01", "01gg", "01 02", "01\n", b"01", None):
             with self.subTest(value=value), self.assertRaises(ReleaseRefused):
-                release_signed_transaction(self.withdrawal, self.withdrawal, value)
+                RegisteredRelease(self.withdrawal, value)
 
     def test_refuses_other_record_types(self):
         with self.assertRaises(ReleaseRefused):
-            release_signed_transaction(self.withdrawal, vars(self.withdrawal), "01ab")
+            RegisteredRelease(vars(self.withdrawal), "01ab")
+        registered = RegisteredRelease(self.withdrawal, "01ab")
+        with self.assertRaises(ReleaseRefused):
+            registered.release_signed_transaction(vars(self.withdrawal))
+
+    def test_registered_transaction_is_immutable(self):
+        registered = RegisteredRelease(self.withdrawal, "01ab")
+        with self.assertRaises(FrozenInstanceError):
+            registered.signed_transaction = "00"
+        self.assertEqual(registered.release_signed_transaction(self.withdrawal), "01ab")
+        self.assertNotIn("01ab", repr(registered))
