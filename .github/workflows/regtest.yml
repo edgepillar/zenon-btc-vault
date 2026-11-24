@@ -55,3 +55,5 @@ jobs:
 
           datadir="$(mktemp -d "${work_dir}/regtest-data.XXXXXX")"
           python3 -B regtest.py --bitcoind "${work_dir}/bitcoind" --datadir "$datadir"
+          fees_datadir="$(mktemp -d "${work_dir}/regtest-fees.XXXXXX")"
+          python3 -B regtest_fee_paths.py --bitcoind "${work_dir}/bitcoind" --datadir "$fees_datadir"

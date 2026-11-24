@@ -35,6 +35,10 @@ def require(condition, message):
         raise RegtestError(message)
 
 
+def bitcoin_amount(satoshis):
+    return format(Decimal(satoshis) / COIN, ".8f")
+
+
 class BitcoinRPC:
     def __init__(self, port, cookie):
         self.port = port
@@ -132,7 +136,7 @@ def vault_descriptor(release_key, refund_key, refund_height):
 def fund_vault(rpc, descriptor):
     checksummed = rpc.call("getdescriptorinfo", descriptor)["descriptor"]
     address, = rpc.call("deriveaddresses", checksummed)
-    txid = rpc.call("sendtoaddress", address, "0.01000000", wallet=True)
+    txid = rpc.call("sendtoaddress", address, bitcoin_amount(VAULT_SATS), wallet=True)
     raw = rpc.call("gettransaction", txid, wallet=True)["hex"]
     decoded = rpc.call("decoderawtransaction", raw)
     outputs = [output for output in decoded["vout"] if output["scriptPubKey"].get("address") == address]
@@ -142,9 +146,9 @@ def fund_vault(rpc, descriptor):
     return {"txid": txid, "vout": output["n"]}
 
 
-def presign(rpc, outpoint, recipient, private_descriptor, locktime):
+def presign(rpc, outpoint, recipient, private_descriptor, locktime, *, payout_sats=PAYMENT_SATS):
     source = {**outpoint, "sequence": REFUND_SEQUENCE}
-    payout = format(Decimal(PAYMENT_SATS) / COIN, ".8f")
+    payout = bitcoin_amount(payout_sats)
     psbt = rpc.call("createpsbt", [source], [{recipient: payout}], locktime, False)
     checksum = rpc.call("getdescriptorinfo", private_descriptor)["checksum"]
     signed = rpc.call(
@@ -304,14 +308,14 @@ def run_controls(rpc):
     print("PASS: CLTV refund rejected before maturity and confirmed after maturity")
 
 
-def main():
-    parser = argparse.ArgumentParser(description=__doc__)
+def main(controls=run_controls, description=__doc__):
+    parser = argparse.ArgumentParser(description=description)
     parser.add_argument("--bitcoind", type=Path, required=True)
     parser.add_argument("--datadir", type=Path, required=True)
     args = parser.parse_args()
     try:
         with start_regtest(args.bitcoind.resolve(), args.datadir.resolve()) as rpc:
-            run_controls(rpc)
+            controls(rpc)
     except (RegtestError, OSError, ValueError) as exc:
         # Keep local paths and RPC inputs out of CI logs.
         parser.exit(1, f"Regtest failed: {exc if isinstance(exc, RegtestError) else type(exc).__name__}\n")
