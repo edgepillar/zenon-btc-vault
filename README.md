@@ -2,6 +2,8 @@
 
 A Bitcoin Core regtest fixture for a vault with a fixed withdrawal destination. It exercises the proposed boundary between a Zenon withdrawal proof and a Bitcoin spend. All keys and funds in the fixture are synthetic.
 
+[Public research brief and roadmap](https://edgepillar.com/zenon-btc-vault-research/)
+
 ## Run locally
 
 The unit tests require Python 3.9 or later. The integration runner uses Bitcoin Core 32.1 with wallet support and an existing empty data directory. It starts a regtest node with loopback RPC and peer networking disabled. Hosted CI runs the integration on Linux with the same pinned [Bitcoin Core release](https://bitcoincore.org/en/releases/32.1/).
