@@ -34,7 +34,14 @@ the commitment from the registration.
 
 The source is [Zeno devnet `cf1c9c0`](https://github.com/Zeno-L2/zeno-devnet/tree/cf1c9c0e0f0ca3b257bdbd019c5589c2c27f748f)
 with its pinned dependencies. The capture selects checkpoints from its own
-isolated producer. Batch eligibility under those checkpoints is a devnet
-result. Canonical history and consensus finality on Zenon mainnet remain
-unestablished. The prototype's [release-policy research](../../docs/withdrawal-policy.md)
-describes the Praxis inspiration and the other required deployment gates.
+isolated producer and relies on the Phase 1 executor attestation for execution
+correctness. Settlement's eligibility timer is defined in the
+[pinned batch acceptance specification](https://github.com/Zeno-L2/zeno-docs/blob/d74ba1fc4b01583af0daf33a2dedfc84ea2b9419/phase-1/tickets/epic-1-l1-settlement/E1-07-submitbatch-acceptance-and-finality.md).
+
+Mainnet release remains blocked pending independently established network
+activation, canonical Momentum finality, and an execution assurance policy
+for the committed L2 transition. The current
+[SPV verification contract](https://github.com/edgepillar/zenon-spv/blob/f058474d5f35cfa08cdccbf153d6fb9fbf9ab649/docs/verification-contract.md)
+covers v1/v2 header and inclusion checks with an explicit external schedule
+and local depth. The prototype's [release-policy research](../../docs/withdrawal-policy.md)
+describes the Praxis inspiration and the other deployment gates.
