@@ -114,13 +114,18 @@ fn main() {
             .unwrap();
             execute(&client, &[], &digest);
         }
+        [mode, source, digest] if mode == "execute" => {
+            let raw = read_witness(source);
+            let digest = hex::decode(digest).expect("witness SHA-256");
+            assert_eq!(digest.len(), 32, "expected a SHA-256 digest");
+            execute(&client, &raw, &digest);
+            controls(&client, &raw);
+        }
         [mode, source, digest, file] if mode == "prove" => {
             let raw = read_witness(source);
             let digest = hex::decode(digest).expect("witness SHA-256");
             assert_eq!(digest.len(), 32, "expected a SHA-256 digest");
             assert!(!Path::new(file).exists(), "proof output already exists");
-            execute(&client, &raw, &digest);
-            controls(&client, &raw);
             let (pk, _) = client.setup(ELF);
             let proof = client
                 .prove(&pk, stdin(&raw))
@@ -138,6 +143,6 @@ fn main() {
             assert_eq!(digest.len(), 32, "expected a SHA-256 digest");
             verify(&client, file, &digest);
         }
-        _ => panic!("usage: smoke | prove WITNESS SHA256 PROOF | verify SHA256 PROOF"),
+        _ => panic!("usage: smoke | execute WITNESS SHA256 | prove WITNESS SHA256 PROOF | verify SHA256 PROOF"),
     }
 }

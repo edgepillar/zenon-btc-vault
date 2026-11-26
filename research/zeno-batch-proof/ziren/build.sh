@@ -42,7 +42,6 @@ if text.count(original) != 1:
 path.write_text(text.replace(original, """func Hash(data ...[]byte) []byte {
 \treturn zirenSHA3(data...)
 }"""), encoding="utf-8")
-
 PY
 
 runtime="github.com/ProjectZKM/Ziren/crates/go-runtime/zkvm_runtime"
@@ -52,6 +51,8 @@ runtime="github.com/ProjectZKM/Ziren/crates/go-runtime/zkvm_runtime"
     -require "$runtime@v0.0.0-20240817102429-2faba0888c02" \
     -replace "$runtime=../../ziren/crates/go-runtime/zkvm_runtime"
 )
+# serde_json already appears in this package's pinned dependency lock.
+sed -i '/^\[build-dependencies\]$/a serde_json = "1.0"' "$ziren/examples/simple-go/host/Cargo.toml"
 cp "$source_dir/ziren/build.rs" "$ziren/examples/simple-go/host/build.rs"
 cp "$source_dir/ziren/host.rs" "$ziren/examples/simple-go/host/src/main.rs"
 go version
