@@ -19,6 +19,28 @@ checks its SHA-256 before rehashing the retained header fields and checking the
 signatures, link and comparison. The live capture is the step that recomputes
 the data and content commitments from their RPC preimages.
 
+## Recorded mainnet observation
+
+The [hosted capture](https://github.com/edgepillar/zenon-btc-vault/actions/runs/45836789285)
+ran on Linux amd64 with Go 1.26.0 at
+`6a2e21fab3f3efec3fe24dfcff206dafd0e41e88`. Both public nodes returned the
+same genesis for chain ID 1 and the same two signed v1 headers.
+
+| Height | Observed time in UTC | Momentum hash |
+| --- | --- | --- |
+| 1 | 2021-11-24 12:00:00 | `9e204601d1b7b1427fe12bc82622e610d8a6ad43c40abf020eb66e538bb8eeb0` |
+| 14,732,845 | 2026-11-26 14:13:30 | `a6c7ff4b9310d8e3f0e6c2032ffde165d634fcdc7d398038d1b6a7cb52482dd4` |
+| 14,732,846 | 2026-11-26 14:13:50 | `bc5f3ea570f78f4737f207e3cc405bfac598e7951b466e87aeb07f7cc198e684` |
+
+The [5,299-byte capture](evidence.json) completed at 14:13:53 UTC and is
+pinned by [SHA-256](evidence.sha256). The sampled layouts have no
+authenticated `StateRoot` field. A successful job means the observation or
+replay completed. The assessment retains `bitcoinRelease: NO_GO`.
+
+The hosted workflow replays the pinned capture on subsequent branch pushes.
+Its manual fresh-observation option collects a new sample when the workflow
+is available on the default branch.
+
 ## Requirements for a mainnet withdrawal proof
 
 | Requirement | Evidence this probe can establish |
