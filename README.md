@@ -20,6 +20,8 @@ The fee fixture checks a zero-fee parent and recipient-signed child in an unsubm
 
 The [Zeno contract authorization fixture](research/zeno-contract-authorization/README.md) uses a deployed immutable WASM contract on an isolated devnet. It verifies the stored Bitcoin target commitment under a selected Momentum checkpoint before mining the exact registered release on Bitcoin regtest.
 
+The [Zeno devnet batch experiment](research/zeno-batch-proof/README.md) captures three ordered calls in one batch and supplies the full transition to a Ziren execution-proof workflow.
+
 The execution replay fixture adds a second check before release. It rebuilds the devnet batches from their L1 inputs and compares the computed commitments with the proven Settlement entries. [Execution replay evidence](research/zeno-execution-replay/README.md)
 
 The Groth16 experiment proves the selected authorization call and its two state writes against a public statement derived from the recorded replay. [Authorization proof experiment](research/authorization-proof/README.md)
