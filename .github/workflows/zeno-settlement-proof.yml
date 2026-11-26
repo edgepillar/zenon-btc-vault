@@ -5,8 +5,7 @@ on:
     branches: [prove-settlement-on-devnet]
     paths:
       - .github/workflows/zeno-settlement-proof.yml
-      - research/zeno-settlement-proof/**
-      - research/zeno-batch-proof/ziren/build.sh
+      - research/zeno-settlement-proof/prover.rs
   workflow_dispatch:
 
 permissions:
@@ -59,7 +58,7 @@ jobs:
           fi
           timeout 35m bash research/zeno-batch-proof/ziren/build.sh "$work_dir" \
             "$PWD/research/zeno-settlement-proof/prover.rs" | tee "$work_dir/build.log"
-          grep -Fx "${GUEST_ELF_SHA256}" <(awk '/^BATCH_GUEST_ELF_SHA256$/ { getline; print }' "$work_dir/build.log")
+          grep -Fxq "BATCH_GUEST_ELF_SHA256 $GUEST_ELF_SHA256" "$work_dir/build.log"
           prover="$work_dir/target/release/simple-go-host"
           test "$(stat -c%s "$prover")" -le "$((256 * 1024 * 1024))"
           printf 'sha256=%s\n' "$(sha256sum < "$prover" | cut -d ' ' -f 1)" >> "$GITHUB_OUTPUT"
