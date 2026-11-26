@@ -158,10 +158,13 @@ if (process.argv[2] === "--verify") {
       prepareCall(vault.iface, "withdraw", [ZNN_ASSET.getBytes(), amount, recipient]),
     )
     const { hash } = await send(user, tx)
-    const receipt = await track(ctx, "withdrawal", hash, (r) => {
+    const withdrawal = track(ctx, "withdrawal", hash, (r) => {
       expectStatus(r, "SUCCESS")
       assert.equal(r.outbox.length, 1, "expected one withdrawal outbox message")
-    }).at("finalized")
+    })
+    const accepted = await withdrawal.at("latest")
+    const receipt = await withdrawal.at("finalized")
+    assert.equal(receipt.batchId, accepted.batchId, "finalization must refer to the accepted batch")
     const item = receipt.outbox[0]
     const proof = await ctx.gateway.getOutboxProof(item.outboxId)
     assert.equal(proof.batchId, receipt.batchId, "withdrawal must belong to the accepted batch")
@@ -177,8 +180,10 @@ if (process.argv[2] === "--verify") {
     const outbox = { message: proof.message, proof: proof.inclusionProof }
     const ledger = ctx.zenon.ledger
     const finalized = await observe(ledger, claim, (await ledger.getFrontierMomentum()).height)
-    const finalizeAt = await verify(finalized, finalized.checkpoint, claim, outbox)
-    const beforeFinalization = await observe(ledger, claim, finalizeAt - 1)
+    const batch = await ctx.zenon.embedded.settlement.getBatch(DOMAIN_ID, proof.batchId)
+    // The RPC height selects the earlier sample. Replay proves the deadline from storage.
+    assert.ok(batch?.isFinalized && Number.isSafeInteger(batch.finalizeAtHeight) && batch.finalizeAtHeight > 1)
+    const beforeFinalization = await observe(ledger, claim, batch.finalizeAtHeight - 1)
     const evidence: Evidence = {
       schemaVersion: 1, sendHash: hash.toString(), claim, outbox, finalized, beforeFinalization,
     }

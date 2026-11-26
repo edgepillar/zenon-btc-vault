@@ -87,6 +87,13 @@ jobs:
         if: failure()
         shell: bash
         run: |
+          if [ -n "${ZENO_EVIDENCE_FILE:-}" ] && [ -f "$ZENO_EVIDENCE_FILE" ] &&
+            [ "$(stat --format=%s "$ZENO_EVIDENCE_FILE")" -le 32768 ]; then
+            printf 'ZENO_UNVERIFIED_SHA256 '
+            sha256sum < "$ZENO_EVIDENCE_FILE" | cut -d ' ' -f 1
+            printf 'ZENO_UNVERIFIED_JSON '
+            cat "$ZENO_EVIDENCE_FILE"
+          fi
           docker ps -a --filter label=com.docker.compose.project=zeno-devnet --format '{{.Names}} {{.Status}}'
           for service in gateway executor; do
             container="$(docker ps -aq --filter label=com.docker.compose.project=zeno-devnet --filter "label=com.docker.compose.service=$service")"
