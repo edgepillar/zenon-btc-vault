@@ -1,0 +1,140 @@
+name: Zeno contract authorization
+
+on:
+  push:
+    branches: [prove-devnet-contract-authorization]
+  workflow_dispatch:
+    inputs:
+      capture_fresh:
+        description: Capture a fresh Zeno devnet and Bitcoin regtest release
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  authorization:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 80
+    env:
+      ZENO_DEVNET_SHA: cf1c9c0e0f0ca3b257bdbd019c5589c2c27f748f
+      DEVNET_BIND_ADDRESS: 127.0.0.1
+      GIT_TERMINAL_PROMPT: '0'
+      GIT_CONFIG_COUNT: '2'
+      GIT_CONFIG_KEY_0: url.https://github.com/.insteadOf
+      GIT_CONFIG_VALUE_0: 'ssh://git@github.com/'
+      GIT_CONFIG_KEY_1: url.https://github.com/.insteadOf
+      GIT_CONFIG_VALUE_1: 'git@github.com:'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24.17.0
+          package-manager-cache: false
+
+      - name: Prepare the pinned TypeScript verifier
+        env:
+          CAPTURE_FRESH: ${{ inputs.capture_fresh }}
+        shell: bash
+        run: |
+          umask 077
+          work_dir="$(mktemp -d "$RUNNER_TEMP/vault-authorization.XXXXXX")"
+          devnet="$work_dir/devnet"
+          mode=replay
+          if [ "$CAPTURE_FRESH" = true ] || [ ! -f research/zeno-contract-authorization/evidence.sha256 ]; then
+            mode=capture
+            free_bytes="$(df -PB1 "$RUNNER_TEMP" | awk 'NR == 2 {print $4}')"
+            required_bytes="$((16 * 1024 * 1024 * 1024))"
+            echo "Available bytes $free_bytes, required $required_bytes including the 10 GiB floor"
+            test "$free_bytes" -ge "$required_bytes"
+            docker compose version
+          fi
+          printf 'ZENO_MODE=%s\nZENO_DEVNET_DIR=%s\nZENO_WORK=%s\n' "$mode" "$devnet" "$work_dir" >> "$GITHUB_ENV"
+          git init --quiet "$devnet"
+          timeout 120s git -C "$devnet" fetch --quiet --depth 1 https://github.com/Zeno-L2/zeno-devnet.git "$ZENO_DEVNET_SHA"
+          git -C "$devnet" checkout --quiet --detach FETCH_HEAD
+          test "$(git -C "$devnet" rev-parse HEAD)" = "$ZENO_DEVNET_SHA"
+          chmod 0644 "$devnet/config/gateway.json"
+          cp research/zeno-withdrawal/batch-proof.ts "$devnet/flows/"
+          cp research/zeno-withdrawal/capture.ts "$devnet/flows/vault-evidence.ts"
+          cp research/zeno-contract-authorization/capture.ts "$devnet/flows/vault-authorizer.ts"
+          cd "$devnet"
+          timeout 8m npm ci --no-audit --no-fund
+          timeout 2m npm run typecheck
+          old_evidence="$GITHUB_WORKSPACE/research/zeno-withdrawal/evidence.json"
+          printf '%s  %s\n' '81c5739a3632cea328626b5ddde0732f2324d444800c2b532f8583770538bb21' "$old_evidence" |
+            sha256sum --check --strict
+          timeout 60s npm exec --offline -- tsx flows/vault-evidence.ts --verify "$old_evidence"
+
+      - name: Build and validate the authorizer WASM
+        if: env.ZENO_MODE == 'capture'
+        shell: bash
+        run: |
+          umask 077
+          timeout 12m bash research/zeno-contract-authorization/build-authorizer.sh "$ZENO_DEVNET_DIR"
+          bash .github/scripts/install-bitcoind.sh "$ZENO_WORK"
+
+      - name: Start the pinned devnet and check the transport switch
+        if: env.ZENO_MODE == 'capture'
+        shell: bash
+        run: |
+          cd "$ZENO_DEVNET_DIR"
+          timeout 8m bash scripts/devnet.sh up --no-config
+          timeout 10m python3 -B "$GITHUB_WORKSPACE/research/zeno-withdrawal/bootstrap.py"
+
+      - name: Configure Settlement and wait for the gateway
+        if: env.ZENO_MODE == 'capture'
+        shell: bash
+        run: |
+          cd "$ZENO_DEVNET_DIR"
+          timeout 18m bash scripts/devnet.sh config
+
+      - name: Prove the contract authorized the registered regtest release
+        if: env.ZENO_MODE == 'capture'
+        shell: bash
+        run: |
+          umask 077
+          datadir="$(mktemp -d "$ZENO_WORK/bitcoin.XXXXXX")"
+          PYTHONPATH="$GITHUB_WORKSPACE" timeout 32m python3 -B research/zeno-contract-authorization/regtest_capture.py \
+            --bitcoind "$ZENO_WORK/bitcoind" --datadir "$datadir" --devnet "$ZENO_DEVNET_DIR" \
+            --artifact "$ZENO_WORK/vault_authorizer" --target "$ZENO_WORK/target.hex" --evidence "$ZENO_WORK/evidence.json"
+
+      - name: Replay the pinned contract state proof
+        if: env.ZENO_MODE == 'replay'
+        shell: bash
+        run: |
+          evidence="$GITHUB_WORKSPACE/research/zeno-contract-authorization"
+          cd "$ZENO_DEVNET_DIR"
+          timeout 60s npm exec --offline -- tsx flows/vault-authorizer.ts replay \
+            "$evidence/evidence.json" "$(cat "$evidence/evidence.sha256")"
+
+      - name: Report capture bytes and their digest
+        if: always() && env.ZENO_MODE == 'capture'
+        env:
+          OUTCOME: ${{ job.status }}
+        shell: bash
+        run: |
+          evidence="$ZENO_WORK/evidence.json"
+          if [ ! -f "$evidence" ]; then
+            test "$OUTCOME" != success
+            exit
+          fi
+          test "$(stat --format=%s "$evidence")" -le 65536
+          printf 'VAULT_CAPTURE_OUTCOME %s\n' "$OUTCOME"
+          printf 'VAULT_CAPTURE_SHA256 '
+          sha256sum < "$evidence" | cut -d ' ' -f 1
+          printf 'VAULT_CAPTURE_JSON '
+          cat "$evidence"
+
+      - name: Stop the isolated devnet
+        if: always() && env.ZENO_MODE == 'capture'
+        shell: bash
+        run: |
+          cd "$ZENO_DEVNET_DIR"
+          if [ -d .devnet ]; then
+            timeout 60s bash scripts/devnet.sh down
+          fi

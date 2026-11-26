@@ -18,9 +18,11 @@ The fixture funds a P2WSH vault and registers one pre-signed release transaction
 
 The fee fixture checks a zero-fee parent and recipient-signed child in an unsubmitted candidate block at registration and stores only the parent. It opens that parent using an inclusion proof for the exact Bitcoin authorization under a synthetic outbox root, then submits it with a fresh fee child. The run observes standalone rejection, package acceptance, both replacement orders at or after refund maturity, and the confirmed payout after the child fee. These are single-node Bitcoin Core 32.1 regtest observations with peer networking disabled. [Authorization encoding and evidence](docs/withdrawal-authorization.md) · [Withdrawal policy](docs/withdrawal-policy.md)
 
+The [Zeno contract authorization fixture](research/zeno-contract-authorization/README.md) uses a deployed immutable WASM contract on an isolated devnet. It verifies the stored Bitcoin target commitment under a selected Momentum checkpoint before mining the exact registered release on Bitcoin regtest.
+
 ## Trust and scope
 
-The mock holds an already signed transaction in cleartext and controls its release inside the test process. The registration uses trusted setup data and Bitcoin Core's local acceptance policy at the time of registration. The Bitcoin authorization fixture trusts the synthetic batch root selected at setup. Source-side issuance of Bitcoin authorizations, Zenon consensus finality, confidential setup, and witness encryption remain open.
+The mock holds an already signed transaction in cleartext and controls its release inside the test process. The registration uses trusted setup data and Bitcoin Core's local acceptance policy at the time of registration. The outbox fixture trusts its synthetic batch root. The contract fixture trusts the isolated devnet's checkpoint selection and executor attestation. Zenon mainnet consensus finality, asset-backed authorization, confidential setup, and witness encryption remain open.
 
 The fixed-output spend covers a single known recipient. A transferable BTC peg would also need accounting, recipient selection and refund reconciliation. The test uses regtest fees and synthetic funds to exercise the transaction flow. Production proving, storage and fee costs remain unmeasured.
 
