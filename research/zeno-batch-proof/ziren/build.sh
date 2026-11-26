@@ -63,6 +63,7 @@ if text.count(run) != 1:
     raise SystemExit("Pinned Ziren execution entry point differs")
 source.write_text(text.replace(run, """        if let Err(error) = runtime.run_fast() {
             eprintln!("BATCH_GUEST_ERROR_PC {:x}", runtime.state.pc);
+            eprintln!("BATCH_GUEST_ERROR_PC {:x}", runtime.registers()[31].saturating_sub(8));
             return Err(error);
         }
         Ok((ZKMPublicValues::from"""), encoding="utf-8")
