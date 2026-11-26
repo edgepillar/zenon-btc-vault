@@ -90,6 +90,25 @@ source.write_text(text.replace(run, """        if let Err(error) = runtime.run_f
         Ok((ZKMPublicValues::from"""), encoding="utf-8")
 PY_PROVER
 
+# Emit shard geometry before the opening so interrupted runs retain the boundary.
+python3 -B - "$ziren/crates/core/machine/src/utils/prove.rs" <<'PY_SHARDS'
+from pathlib import Path
+from sys import argv
+
+source = Path(argv[1])
+text = source.read_text(encoding="utf-8")
+anchor = "                                let cluster_widths = shard_clusters.cluster_widths(&record);"
+if text.count(anchor) != 1:
+    raise SystemExit("Pinned Ziren shard opening entry point differs")
+source.write_text(text.replace(anchor, """                                tracing::info!(
+                                    shard = record.public_values.shard,
+                                    memory_init = record.global_memory_initialize_events.len(),
+                                    memory_finalize = record.global_memory_finalize_events.len(),
+                                    "BATCH_PROOF_SHARD",
+                                );
+""" + anchor), encoding="utf-8")
+PY_SHARDS
+
 # serde_json already appears in this package's pinned dependency lock.
 sed -i '/^\[build-dependencies\]$/a serde_json = "1.0"' "$ziren/examples/simple-go/host/Cargo.toml"
 cp "$source_dir/ziren/build.rs" "$ziren/examples/simple-go/host/build.rs"

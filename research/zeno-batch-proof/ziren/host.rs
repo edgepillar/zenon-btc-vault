@@ -1,8 +1,8 @@
 use serde_json::Value;
 use std::{env, fs, io::Read, path::Path};
 use zkm_sdk::{
-    CpuProver, ProverClient, ZKMProof, ZKMProofWithPublicValues, ZKMProver, ZKMPublicValues,
-    ZKMStdin,
+    provers::ProofOpts, CpuProver, ProverClient, ZKMContextBuilder, ZKMProof, ZKMProofKind,
+    ZKMProofWithPublicValues, ZKMProver, ZKMPublicValues, ZKMStdin,
 };
 
 const ELF: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/vault-guest"));
@@ -128,13 +128,17 @@ fn main() {
             assert!(!Path::new(file).exists(), "proof output already exists");
             println!("BATCH_PROVER_SETUP_STARTED");
             let (pk, _) = client.setup(ELF);
-            println!("BATCH_PROVER_CORE_STARTED");
-            let proof = client
-                .prove(&pk, stdin(&raw))
-                .core()
-                .cycle_limit(MAX_CYCLES)
-                .shard_batch_size(1)
-                .run()
+            let mut opts = ProofOpts::default();
+            let core = &mut opts.zkm_prover_opts.core_opts;
+            core.shard_batch_size = 1;
+            // Bound the terminal global-memory shards on the hosted CPU runner.
+            core.split_opts.memory = 32_768;
+            let mut context = ZKMContextBuilder::default();
+            context.max_cycles(MAX_CYCLES);
+            println!("BATCH_PROVER_CORE_STARTED memory_events_per_shard=32768");
+            let (proof, _) = client
+                .prover
+                .prove_impl(&pk, stdin(&raw), opts, context.build(), ZKMProofKind::Core, None)
                 .expect("CPU proof generation failed");
             assert_eq!(proof.public_values.as_slice(), digest, "proof journal differs");
             proof.save(file).expect("write proof");
