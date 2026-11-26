@@ -3,6 +3,7 @@ set -euo pipefail
 
 work="$1"
 source_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+host_source="${2:-$source_dir/ziren/host.rs}"
 executor="$work/zeno/zeno-executor"
 zenon="$work/zenon-network/go-zenon"
 ziren="$work/ziren"
@@ -111,8 +112,28 @@ PY_SHARDS
 
 # serde_json already appears in this package's pinned dependency lock.
 sed -i '/^\[build-dependencies\]$/a serde_json = "1.0"' "$ziren/examples/simple-go/host/Cargo.toml"
+if [[ "$#" -eq 2 ]]; then
+  sed -i '/^zkm-sdk = { workspace = true }$/a zkm-prover = { workspace = true }' \
+    "$ziren/examples/simple-go/host/Cargo.toml"
+  python3 -B - "$ziren/examples/Cargo.lock" <<'PY_LOCK'
+from pathlib import Path
+from sys import argv
+
+lock = Path(argv[1])
+text = lock.read_text(encoding="utf-8")
+prefix = 'name = "simple-go-host"\nversion = "1.1.0"\ndependencies = [\n'
+start = text.index(prefix)
+end = text.index("\n]", start)
+package = text[start:end]
+anchor = ' "zkm-sdk",'
+if package.count(anchor) != 1:
+    raise SystemExit("Pinned example dependency list differs")
+package = package.replace(anchor, ' "zkm-prover",\n' + anchor)
+lock.write_text(text[:start] + package + text[end:], encoding="utf-8")
+PY_LOCK
+fi
 cp "$source_dir/ziren/build.rs" "$ziren/examples/simple-go/host/build.rs"
-cp "$source_dir/ziren/host.rs" "$ziren/examples/simple-go/host/src/main.rs"
+cp "$host_source" "$ziren/examples/simple-go/host/src/main.rs"
 go version
 (
   cd "$ziren"
