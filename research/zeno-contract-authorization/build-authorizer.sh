@@ -29,13 +29,14 @@ executor="$src/zeno/zeno-executor"
 replay="$executor/cmd/vault-execution-replay"
 mkdir "$replay"
 cp "$here/../zeno-execution-replay/replay.go" "$replay/"
+cp "$here/../zeno-batch-proof/batch-witness.go" "$replay/"
 (
   cd "$executor"
   go version
   GOWORK=off go build -mod=readonly -trimpath -o "$work_dir/verify-execution" ./cmd/vault-execution-replay
 )
 # This source overlay belongs to the build. Leave the pinned devnet checkout clean.
-rm "$replay/replay.go"
+rm "$replay/replay.go" "$replay/batch-witness.go"
 rmdir "$replay"
 printf 'Execution verifier SHA-256 '
 sha256sum < "$work_dir/verify-execution" | cut -d ' ' -f 1
