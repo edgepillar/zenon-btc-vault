@@ -20,6 +20,21 @@ def _hash_bytes(value, field_name):
     return bytes.fromhex(value)
 
 
+def encode_bitcoin_target(withdrawal: Withdrawal, bitcoin_genesis: str) -> bytes:
+    """Encode the Bitcoin fields shared by the two experimental proof paths."""
+    if type(withdrawal) is not Withdrawal:
+        raise ReleaseRefused("A Bitcoin target requires a withdrawal")
+    if len(withdrawal.recipient_script_pubkey) > 2 * MAX_SCRIPT_BYTES:
+        raise ReleaseRefused("Recipient script exceeds the authorization length limit")
+    script = bytes.fromhex(withdrawal.recipient_script_pubkey)
+    return b"".join((
+        _hash_bytes(bitcoin_genesis, "Bitcoin genesis"),
+        bytes.fromhex(withdrawal.txid),
+        pack(">IQH", withdrawal.vout, withdrawal.amount_sats, len(script)),
+        script,
+    ))
+
+
 @dataclass(frozen=True)
 class WithdrawalSource:
     """Identify the source batch and the authorized withdrawal contract."""
@@ -43,18 +58,12 @@ def encode_authorization(withdrawal: Withdrawal, source: WithdrawalSource, bitco
         raise ReleaseRefused("An authorization requires a withdrawal and a source batch")
     if withdrawal.source_network != f"zenon:{source.chain_id}" or withdrawal.domain_id != str(source.domain_id):
         raise ReleaseRefused("Withdrawal network and domain must match the source batch")
-    if len(withdrawal.recipient_script_pubkey) > 2 * MAX_SCRIPT_BYTES:
-        raise ReleaseRefused("Recipient script exceeds the authorization length limit")
-    script = bytes.fromhex(withdrawal.recipient_script_pubkey)
     return b"".join((
         WITHDRAWAL_TAG,
         pack(">QIQ", source.chain_id, source.domain_id, source.batch_id),
         bytes.fromhex(source.contract_hash),
         _hash_bytes(withdrawal.outbox_id, "outbox ID"),
-        _hash_bytes(bitcoin_genesis, "Bitcoin genesis"),
-        bytes.fromhex(withdrawal.txid),
-        pack(">IQH", withdrawal.vout, withdrawal.amount_sats, len(script)),
-        script,
+        encode_bitcoin_target(withdrawal, bitcoin_genesis),
     ))
 
 

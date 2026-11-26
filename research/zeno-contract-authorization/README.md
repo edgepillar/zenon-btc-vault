@@ -1,0 +1,40 @@
+# Zeno contract authorization for a registered regtest release
+
+The capture combines Bitcoin Core 32.1 regtest with the pinned Zeno devnet.
+Bitcoin Core validates a presigned fixed-recipient transaction against a
+confirmed vault output before the Zeno call. The immutable WASM authorizer
+accepts a commitment once from a designated public devnet fixture caller.
+It requires a storage quota of 96 bytes and uses slot `01`.
+
+The commitment is SHA3-256 over the following byte sequence.
+
+| Field | Encoding |
+| --- | --- |
+| Tag | `zenon-btc-vault/contract-authorization` followed by `00 01` |
+| Zenon chain ID and Zeno domain | Unsigned big-endian `u64` and `u32` |
+| Authorizing contract ID | 32 bytes |
+| Bitcoin network genesis and funding transaction ID | 32 bytes each in Bitcoin Core display byte order |
+| Funding output index and payout amount | Unsigned big-endian `u32` and `u64` in satoshis |
+| Recipient `scriptPubKey` | Unsigned big-endian `u16` length followed by the script bytes |
+
+The application writes a commitment into contract state. The verifier proves
+the Settlement batch entry under a selected v3 Momentum checkpoint, then
+checks the contract metadata and storage proofs under that batch's
+`postStateRoot`. The pinned module hash, immutable policy, contract instance,
+storage slot and Bitcoin target all participate in authorization. The batch
+and checkpoint bind the proof at verification time. No future batch number is
+needed at contract call time.
+
+The hosted capture checks runtime refusals for a different caller and an
+attempted second write. Offline replay checks the retained proof and refuses an
+ineligible checkpoint, a mismatched checkpoint, contract, module, target or
+batch, and a modified leaf. Bitcoin Core mines the original registered bytes
+only after the local verifier succeeds and the harness independently rebuilds
+the commitment from the registration.
+
+The source is [Zeno devnet `cf1c9c0`](https://github.com/Zeno-L2/zeno-devnet/tree/cf1c9c0e0f0ca3b257bdbd019c5589c2c27f748f)
+with its pinned dependencies. The capture selects checkpoints from its own
+isolated producer. Batch eligibility under those checkpoints is a devnet
+result. Canonical history and consensus finality on Zenon mainnet remain
+unestablished. The prototype's [release-policy research](../../docs/withdrawal-policy.md)
+describes the Praxis inspiration and the other required deployment gates.

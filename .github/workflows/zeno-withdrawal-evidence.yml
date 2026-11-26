@@ -6,6 +6,7 @@ on:
     paths:
       - .github/workflows/zeno-withdrawal-evidence.yml
       - research/zeno-withdrawal/capture.ts
+      - research/zeno-withdrawal/batch-proof.ts
       - research/zeno-withdrawal/bootstrap.py
       - research/zeno-withdrawal/evidence.json
   workflow_dispatch:
@@ -78,6 +79,7 @@ jobs:
           # The unprivileged gateway reads this public file through a Docker bind mount.
           chmod 0644 "$devnet/config/gateway.json"
           cp research/zeno-withdrawal/capture.ts "$devnet/flows/vault-evidence.ts"
+          cp research/zeno-withdrawal/batch-proof.ts "$devnet/flows/batch-proof.ts"
           cd "$devnet"
           timeout 8m npm ci --no-audit --no-fund
           timeout 2m npm run typecheck

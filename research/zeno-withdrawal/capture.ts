@@ -1,22 +1,15 @@
 import assert from "node:assert/strict"
 import { readFile, stat, writeFile } from "node:fs/promises"
 import { prepareCall } from "zeno-client"
-import { Hash, settlement, type LedgerApi } from "znn-typescript-sdk"
-import { CHAIN_ID, DOMAIN_ID, keyPair } from "../src/devnet.js"
+import { settlement } from "znn-typescript-sdk"
+import { DOMAIN_ID, keyPair } from "../src/devnet.js"
+import { observeBatch, proveBatch, type Checkpoint, type Snapshot } from "./batch-proof.js"
 import {
   BALANCE_LEAF_BYTES, ONE_ZNN, PLASMA_LIMIT, ZNN_ASSET, buyStorage, depositTo,
   deployVault, expectStatus, flow, send, track, user,
 } from "./lib.js"
 
 const MAX_EVIDENCE_BYTES = 32_768
-
-interface Checkpoint {
-  chainIdentifier: number
-  version: number
-  height: number
-  hash: string
-  root: string
-}
 
 interface Claim {
   domainId: number
@@ -28,11 +21,6 @@ interface Claim {
   amount: string
 }
 
-interface Snapshot {
-  checkpoint: Checkpoint
-  stateProof: { value: string; proof: string; root: string }
-}
-
 interface Evidence {
   schemaVersion: 1
   sendHash: string
@@ -42,61 +30,8 @@ interface Evidence {
   beforeFinalization: Snapshot
 }
 
-function batchKey(claim: Claim): Uint8Array {
-  return settlement.SettlementKeys.batchEntry(claim.domainId, BigInt(claim.batchId))
-}
-
-async function observe(ledger: LedgerApi, claim: Claim, height: number): Promise<Snapshot> {
-  const header = (await ledger.getMomentumsByHeight(height, 1)).list[0]
-  assert.ok(header?.stateRoot && header.height === height && header.version === 3, "expected a v3 checkpoint")
-  assert.equal(header.chainIdentifier, CHAIN_ID, "expected the pinned devnet chain")
-  const proof = await ledger.getProof(height, settlement.stateTreeKey(batchKey(claim)))
-  assert.ok(proof.value, "batch state proof is missing")
-  const currentHeader = (await ledger.getMomentumsByHeight(height, 1)).list[0]
-  assert.equal(currentHeader?.hash.toString(), header.hash.toString(), "the checkpoint changed during capture")
-  return {
-    checkpoint: {
-      chainIdentifier: header.chainIdentifier,
-      version: header.version,
-      height,
-      hash: header.hash.toString(),
-      root: header.stateRoot.toString(),
-    },
-    stateProof: {
-      value: Buffer.from(proof.value).toString("base64"),
-      proof: Buffer.from(proof.proof).toString("base64"),
-      root: proof.root.toString(),
-    },
-  }
-}
-
 async function verify(snapshot: Snapshot, checkpoint: Checkpoint, claim: Claim, outbox: Evidence["outbox"]) {
-  assert.deepEqual(snapshot.checkpoint, checkpoint, "evidence must match the selected devnet checkpoint")
-  assert.equal(checkpoint.chainIdentifier, CHAIN_ID, "unexpected chain")
-  assert.equal(checkpoint.version, 3, "unexpected Momentum version")
-  assert.ok(Number.isSafeInteger(checkpoint.height) && checkpoint.height > 0, "invalid checkpoint height")
-
-  const { stateProof } = snapshot
-  // Replay the captured RPC values through the pinned SDK's local SMT verifier.
-  const ledger = {
-    getMomentumsByHeight: async () => ({
-      list: [{ height: checkpoint.height, stateRoot: Hash.parse(checkpoint.root) }],
-    }),
-    getProof: async () => ({
-      value: Buffer.from(stateProof.value, "base64"),
-      proof: Buffer.from(stateProof.proof, "base64"),
-      root: Hash.parse(stateProof.root),
-    }),
-  } as unknown as LedgerApi
-  const entry = await new settlement.SettlementStorage(ledger).readVariable(
-    checkpoint.height, batchKey(claim), "batchEntry",
-  )
-  assert.ok(entry, "batch must be present")
-  assert.equal(BigInt(entry.protocolVersion), 1n, "unexpected Settlement protocol version")
-  assert.equal(BigInt(entry.state), 0n, "unexpected Settlement acceptance state")
-  const finalizeAt = BigInt(entry.finalizeAtHeight)
-  assert.ok(finalizeAt >= BigInt(entry.submittedAtHeight) && finalizeAt > 0n, "invalid Settlement finalization height")
-  assert.ok(BigInt(checkpoint.height) >= finalizeAt, "checkpoint is before the batch finalizes")
+  const entry = await proveBatch(snapshot, checkpoint, claim.domainId, claim.batchId)
 
   const message = Buffer.from(outbox.message, "hex")
   const proof = Buffer.from(outbox.proof, "hex")
@@ -115,7 +50,7 @@ async function verify(snapshot: Snapshot, checkpoint: Checkpoint, claim: Claim, 
   assert.equal(item.assetId.toString(), claim.assetId, "unexpected withdrawal asset")
   assert.equal(item.recipient.toString(), claim.recipient, "unexpected withdrawal recipient")
   assert.equal(item.amount.toString(), claim.amount, "unexpected withdrawal amount")
-  return Number(finalizeAt)
+  return Number(entry.finalizeAtHeight)
 }
 
 async function checkEvidence(evidence: Evidence) {
@@ -181,11 +116,11 @@ if (process.argv[2] === "--verify") {
     }
     const outbox = { message: proof.message, proof: proof.inclusionProof }
     const ledger = ctx.zenon.ledger
-    const finalized = await observe(ledger, claim, (await ledger.getFrontierMomentum()).height)
+    const finalized = await observeBatch(ledger, claim.domainId, claim.batchId, (await ledger.getFrontierMomentum()).height)
     const batch = await ctx.zenon.embedded.settlement.getBatch(DOMAIN_ID, proof.batchId)
     // The RPC height selects the earlier sample. Replay proves the deadline from storage.
     assert.ok(batch?.isFinalized && Number.isSafeInteger(batch.finalizeAtHeight) && batch.finalizeAtHeight > 1)
-    const beforeFinalization = await observe(ledger, claim, batch.finalizeAtHeight - 1)
+    const beforeFinalization = await observeBatch(ledger, claim.domainId, claim.batchId, batch.finalizeAtHeight - 1)
     const evidence: Evidence = {
       schemaVersion: 1, sendHash: hash.toString(), claim, outbox, finalized, beforeFinalization,
     }
