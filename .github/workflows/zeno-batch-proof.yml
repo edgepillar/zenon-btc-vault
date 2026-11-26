@@ -1,0 +1,82 @@
+name: Zeno multi-input batch execution proof
+
+on:
+  push:
+    branches: [prove-devnet-batch-transition]
+    paths:
+      - .github/workflows/zeno-batch-proof.yml
+      - research/zeno-batch-proof/**
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  proof:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      GIT_TERMINAL_PROMPT: '0'
+      GOTOOLCHAIN: local
+      GOWORK: 'off'
+      CARGO_BUILD_JOBS: '3'
+      RAYON_NUM_THREADS: '2'
+      ELEMENT_THRESHOLD: '35000000'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
+        with:
+          go-version: '1.25.4'
+          cache: false
+
+      - name: Build the pinned MIPS guest and CPU prover
+        shell: bash
+        run: |
+          umask 077
+          work_dir="$(mktemp -d "$RUNNER_TEMP/vault-proof.XXXXXX")"
+          free_bytes="$(df -PB1 "$work_dir" | awk 'NR == 2 {print $4}')"
+          test "$free_bytes" -ge "$((23 * 1024 * 1024 * 1024))"
+          printf 'ZENO_PROOF_WORK=%s\n' "$work_dir" >> "$GITHUB_ENV"
+          if ! command -v protoc >/dev/null; then
+            timeout 180s sudo apt-get -q update
+            timeout 180s sudo apt-get -q install -y protobuf-compiler
+          fi
+          timeout 35m bash research/zeno-batch-proof/ziren/build.sh "$work_dir"
+
+      - name: Check guest execution and SHA3-256 parity
+        shell: bash
+        run: timeout 300s "$ZENO_PROOF_WORK/target/release/simple-go-host" smoke
+
+      - name: Prove all recorded batch inputs
+        if: hashFiles('research/zeno-batch-proof/batch.json') != ''
+        shell: bash
+        run: |
+          cd research/zeno-batch-proof
+          digest="$(cat batch.sha256)"
+          [[ "$digest" =~ ^[0-9a-f]{64}$ ]]
+          printf '%s  %s\n' "$digest" batch.json | sha256sum --check --strict
+          ulimit -f 262144
+          /usr/bin/time -f 'BATCH_PROVER_ELAPSED_SECONDS %e MAX_RSS_KIB %M EXIT %x' \
+            timeout --kill-after=20s 50m "$ZENO_PROOF_WORK/target/release/simple-go-host" prove \
+            batch.json "$digest" "$ZENO_PROOF_WORK/proof.bin"
+
+      - name: Verify the serialized proof in a separate process
+        if: hashFiles('research/zeno-batch-proof/batch.json') != ''
+        shell: bash
+        run: |
+          timeout 5m "$ZENO_PROOF_WORK/target/release/simple-go-host" verify \
+            "$(cat research/zeno-batch-proof/batch.sha256)" "$ZENO_PROOF_WORK/proof.bin"
+          printf 'BATCH_PROOF_SHA256 '
+          sha256sum < "$ZENO_PROOF_WORK/proof.bin" | cut -d ' ' -f 1
+
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        if: hashFiles('research/zeno-batch-proof/batch.json') != ''
+        with:
+          name: zeno-devnet-batch-proof
+          path: ${{ env.ZENO_PROOF_WORK }}/proof.bin
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 90
