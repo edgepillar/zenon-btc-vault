@@ -133,9 +133,13 @@ def vault_descriptor(release_key, refund_key, refund_height):
     return f"wsh(or_i(pk({release_key}),and_v(v:pk({refund_key}),after({refund_height}))))"
 
 
-def fund_vault(rpc, descriptor):
+def vault_address(rpc, descriptor):
     checksummed = rpc.call("getdescriptorinfo", descriptor)["descriptor"]
     address, = rpc.call("deriveaddresses", checksummed)
+    return address
+
+
+def fund_vault(rpc, address):
     txid = rpc.call("sendtoaddress", address, bitcoin_amount(VAULT_SATS), wallet=True)
     raw = rpc.call("gettransaction", txid, wallet=True)["hex"]
     decoded = rpc.call("decoderawtransaction", raw)
@@ -169,6 +173,7 @@ def check_vault_witness(tx_input, selector):
         "The transaction must select the expected vault branch",
     )
     require(witness[0].endswith("01"), "The vault signature must use SIGHASH_ALL")
+    return bytes.fromhex(witness[2])
 
 
 def mempool_result(rpc, raw):
@@ -176,8 +181,26 @@ def mempool_result(rpc, raw):
     return result
 
 
-def register_release(rpc, withdrawal, signed_transaction):
-    """Check a signed release against the funded vault before the mock holds it."""
+def check_release_package(rpc, parent, parent_txid, fee_child):
+    child = rpc.call("decoderawtransaction", fee_child)
+    require(len(child["vin"]) == 1, "The fee child must spend only the release payout")
+    child_input = child["vin"][0]
+    require(
+        (child_input.get("txid"), child_input.get("vout")) == (parent_txid, 0),
+        "The fee child must spend the registered release payout",
+    )
+    require(
+        sum(output["value"] for output in child["vout"]) * COIN < VAULT_SATS,
+        "The fee child must pay a positive fee",
+    )
+    # Core 32.1's dry-run mempool RPC checks fees per transaction. An unsubmitted
+    # regtest block checks the signatures and UTXOs without applying relay fees.
+    block = rpc.call("generateblock", "raw(51)", [parent, fee_child], False)
+    require(bool(block.get("hex")), "Bitcoin Core did not return an unsubmitted candidate block")
+
+
+def register_release(rpc, withdrawal, signed_transaction, *, vault_script, fee_child=None):
+    """Check the funded vault and the signed spend, then register the parent."""
     candidate = RegisteredRelease(withdrawal, signed_transaction)
     decoded = rpc.call("decoderawtransaction", candidate.signed_transaction)
     require(
@@ -199,11 +222,30 @@ def register_release(rpc, withdrawal, signed_transaction):
         "Release recipient does not match the withdrawal",
     )
     require(decoded["locktime"] == 0, "Release must be immediately spendable")
-    check_vault_witness(tx_input, "01")
+    require(tx_input.get("sequence") == REFUND_SEQUENCE, "Unexpected release input sequence")
+    witness_script = check_vault_witness(tx_input, "01")
     require(
-        mempool_result(rpc, candidate.signed_transaction)["allowed"],
-        "Bitcoin Core rejected the registered spend",
+        "0020" + hashlib.sha256(witness_script).hexdigest() == vault_script,
+        "Release witness does not match the expected vault script",
     )
+    funding = rpc.call("gettxout", withdrawal.txid, withdrawal.vout, False)
+    require(
+        funding is not None and funding["confirmations"] >= 1,
+        "Release requires a confirmed funding output",
+    )
+    require(
+        funding["scriptPubKey"]["hex"] == vault_script,
+        "Funding output does not match the expected vault script",
+    )
+    require(funding["value"] * COIN == VAULT_SATS, "Unexpected confirmed funding amount")
+    if fee_child is None:
+        require(
+            mempool_result(rpc, candidate.signed_transaction)["allowed"],
+            "Bitcoin Core rejected the registered spend",
+        )
+    else:
+        require(withdrawal.amount_sats == VAULT_SATS, "A package release must have a zero-fee parent")
+        check_release_package(rpc, candidate.signed_transaction, decoded["txid"], fee_child)
     return candidate
 
 
@@ -241,9 +283,10 @@ def run_controls(rpc):
     release_pub = public_key(rpc, release_wif)
     refund_pub = public_key(rpc, refund_wif)
     public_descriptor = vault_descriptor(release_pub, refund_pub, refund_height)
-    release_outpoint = fund_vault(rpc, public_descriptor)
-    refund_outpoint = fund_vault(rpc, public_descriptor)
-    rpc.call("generatetoaddress", 1, miner)
+    address = vault_address(rpc, public_descriptor)
+    vault_script = rpc.call("validateaddress", address)["scriptPubKey"]
+    release_outpoint = fund_vault(rpc, address)
+    refund_outpoint = fund_vault(rpc, address)
 
     release_raw = presign(
         rpc, release_outpoint, recipient,
@@ -257,7 +300,21 @@ def run_controls(rpc):
         recipient_script_pubkey=recipient_script,
         **release_outpoint,
     )
-    registered = register_release(rpc, expected, release_raw)
+    require(
+        mempool_result(rpc, release_raw)["allowed"],
+        "The unconfirmed-vault spend must be independently admissible",
+    )
+    try:
+        register_release(rpc, expected, release_raw, vault_script=vault_script)
+    except RegtestError as exc:
+        if str(exc) != "Release requires a confirmed funding output":
+            raise
+    else:
+        raise RegtestError("The registry accepted unconfirmed funding")
+    print("PASS: registration rejects an admissible spend of unconfirmed funding")
+
+    rpc.call("generatetoaddress", 1, miner)
+    registered = register_release(rpc, expected, release_raw, vault_script=vault_script)
     other_raw = presign(
         rpc, refund_outpoint, recipient,
         vault_descriptor(release_wif, refund_pub, refund_height), locktime=0,
@@ -267,7 +324,7 @@ def run_controls(rpc):
         "The other vault's release must be independently valid",
     )
     try:
-        register_release(rpc, expected, other_raw)
+        register_release(rpc, expected, other_raw, vault_script=vault_script)
     except RegtestError as exc:
         if str(exc) != "Release outpoint does not match the withdrawal":
             raise
