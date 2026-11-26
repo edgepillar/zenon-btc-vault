@@ -48,7 +48,7 @@ jobs:
 
       - name: Check guest execution and SHA3-256 parity
         shell: bash
-        run: timeout 300s "$ZENO_PROOF_WORK/target/release/simple-go-host" smoke
+        run: timeout --kill-after=10s 300s "$ZENO_PROOF_WORK/target/release/simple-go-host" smoke
 
       - name: Prove all recorded batch inputs
         if: hashFiles('research/zeno-batch-proof/batch.json') != ''

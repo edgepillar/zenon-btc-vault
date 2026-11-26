@@ -1,7 +1,8 @@
 use serde_json::Value;
 use std::{env, fs, io::Read, path::Path};
 use zkm_sdk::{
-    ProverClient, ZKMProof, ZKMProofWithPublicValues, ZKMPublicValues, ZKMStdin,
+    CpuProver, ProverClient, ZKMProof, ZKMProofWithPublicValues, ZKMProver, ZKMPublicValues,
+    ZKMStdin,
 };
 
 const ELF: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/vault-guest"));
@@ -85,7 +86,11 @@ fn verify(client: &ProverClient, file: &str, digest: &[u8]) {
     assert_eq!(proof.public_values.as_slice(), digest, "proof journal differs");
     let (_, vk) = client.setup(ELF);
     client.verify(&proof, &vk).expect("verify batch proof");
-    println!("BATCH_PROOF_VERIFIED {size} {}", hex::encode(digest));
+    println!(
+        "BATCH_PROOF_VERIFIED {size} {} {}",
+        hex::encode(digest),
+        proof.zkm_version
+    );
 
     let mut changed = digest.to_vec();
     changed[0] ^= 1;
@@ -97,7 +102,10 @@ fn verify(client: &ProverClient, file: &str, digest: &[u8]) {
 fn main() {
     zkm_sdk::utils::setup_logger();
     let args: Vec<_> = env::args().skip(1).collect();
-    let client = ProverClient::cpu();
+    // Core proving does not use recursion. Build its programs only if requested.
+    let client = ProverClient {
+        prover: Box::new(CpuProver::from_prover(ZKMProver::uninitialized())),
+    };
     match args.as_slice() {
         [mode] if mode == "smoke" => {
             let digest = hex::decode(
