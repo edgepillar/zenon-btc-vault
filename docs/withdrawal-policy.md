@@ -6,7 +6,7 @@ The fixture uses one confirmed P2WSH funding output and one predetermined Bitcoi
 
 1. Pin the Bitcoin network, expected funding script and value, and source-chain and domain context independently of the signed transaction. Register the release against a confirmed UTXO that matches that vault. The fixture requires one funding confirmation.
 2. Bind one immediate, signed release to that outpoint, the recipient script, and the gross amount. Check the selected witness branch and `SIGHASH_ALL` under the expected P2WSH commitment.
-3. For a standalone release, check local admission through Bitcoin Core. For a zero-fee release, check a package containing the parent and a child that spends the payout and pays the entire fee. Store the parent only. Package admission at setup is a point-in-time observation.
+3. For a standalone release, check local admission through Bitcoin Core. For a zero-fee release, check consensus validity in a candidate regtest block containing the parent and a child that spends the payout and pays the entire fee. Leave the candidate block unsubmitted and store the parent only. Mempool package admission is evaluated at publication.
 4. At publication, use the exact registered parent. Check the current funding status and admission conditions. A recipient who funds a fresh child from the payout receives the gross amount minus the child fee. The Bitcoin fee fixture exercises a different child at publication and checks this net payout after mining.
 
 ## Withdrawal window and refund

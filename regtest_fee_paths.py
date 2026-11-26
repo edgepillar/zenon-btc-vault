@@ -1,5 +1,6 @@
 """Measure local regtest policy for CPFP and competing vault spends."""
 
+from dataclasses import replace
 from decimal import Decimal
 
 from mock_release import ReleaseRefused, Withdrawal
@@ -11,6 +12,7 @@ from regtest import (
     fund_vault,
     main,
     mempool_result,
+    mutate_recipient,
     presign,
     public_key,
     register_release,
@@ -71,6 +73,7 @@ def run_fee_controls(rpc):
     address = vault_address(rpc, descriptor)
     vault_script = rpc.call("validateaddress", address)["scriptPubKey"]
     recipient_script = rpc.call("validateaddress", recipient)["scriptPubKey"]
+    child_script = rpc.call("validateaddress", child_destination)["scriptPubKey"]
     refund_wins = fund_vault(rpc, address)
     package_wins = fund_vault(rpc, address)
     rpc.call("generatetoaddress", 1, miner)
@@ -105,6 +108,7 @@ def run_fee_controls(rpc):
         )
         for outpoint, outbox_id in ((refund_wins, "first-release"), (package_wins, "second-release"))
     )
+    tip = rpc.call("getbestblockhash")
     first_registration, second_registration = (
         register_release(
             rpc, claim, release, vault_script=vault_script,
@@ -112,7 +116,19 @@ def run_fee_controls(rpc):
         )
         for claim, release in ((first_claim, first_release), (second_claim, second_release))
     )
-    require(not rpc.call("getrawmempool"), "Package registration must leave the mempool empty")
+    altered = mutate_recipient(first_release, recipient_script, child_script)
+    try:
+        register_release(
+            rpc, replace(first_claim, recipient_script_pubkey=child_script), altered,
+            vault_script=vault_script, fee_child=sign_fee_child(rpc, altered, child_destination, 1_000),
+        )
+    except RegtestError as exc:
+        if str(exc) != "generateblock: RPC error -25":
+            raise
+    else:
+        raise RegtestError("Candidate block validation accepted an altered release signature")
+    require(rpc.call("getbestblockhash") == tip, "Package registration changed the chain tip")
+    require(not rpc.call("getrawmempool"), "Package registration changed the mempool")
     try:
         first_registration.release_signed_transaction(second_claim)
     except ReleaseRefused:
@@ -120,6 +136,7 @@ def run_fee_controls(rpc):
     else:
         raise RegtestError("The mock released a packaged spend for another vault's claim")
     print("PASS: zero-fee parents register without broadcast and require the matching claim")
+    print("PASS: unsubmitted block validation rejects a release with an altered payout")
 
     rpc.call("generatetoaddress", 1, miner)
     require(rpc.call("getblockcount") == refund_height - 1, "Unexpected pre-refund chain height")
@@ -159,7 +176,6 @@ def run_fee_controls(rpc):
     require_mined(rpc, miner, second_package, {refund_id})
     mined_child = rpc.call("decoderawtransaction", second_child)
     payout = rpc.call("gettxout", mined_child["txid"], 0, False)
-    child_script = rpc.call("validateaddress", child_destination)["scriptPubKey"]
     require(
         payout is not None and payout["scriptPubKey"]["hex"] == child_script
         and payout["value"] * COIN == VAULT_SATS - 10_000,
