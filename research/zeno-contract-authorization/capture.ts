@@ -6,10 +6,10 @@ import {
   type ContractView, type ReadResult, type StorageView,
 } from "zeno-client"
 import { Hash, settlement, type KeyPair } from "znn-typescript-sdk"
-import { CHAIN_ID, DOMAIN_ID, keyPair } from "../src/devnet.js"
+import { CHAIN_ID, CONFIRMATION_DEPTH, DOMAIN_ID, keyPair, waitFor } from "../src/devnet.js"
 import { observeBatch, proveBatch, type Checkpoint, type Snapshot } from "./batch-proof.js"
 import {
-  PLASMA_LIMIT, buyStorage, expectStatus, flow, send, track, user, type Ctx, type Vault,
+  PLASMA_LIMIT, buyStorage, executorDown, expectStatus, flow, send, track, user, type Ctx, type Vault,
 } from "./lib.js"
 
 const MAX_EVIDENCE_BYTES = 65_536
@@ -118,23 +118,23 @@ async function deployAuthorizer(ctx: Ctx, artifact: string): Promise<Vault> {
   return { iface, codeHash, contractId, deployFee: plan.fee }
 }
 
-async function authorize(ctx: Ctx, contract: Vault, caller: KeyPair, digest: string, label: string, abortCode: number) {
+async function authorize(ctx: Ctx, contract: Vault, caller: KeyPair, digest: string, label: string, abortCode: number, queued: boolean) {
   const transaction = ctx.zenon.embedded.settlement.callL2(
     DOMAIN_ID, contract.contractId, PLASMA_LIMIT,
     prepareCall(contract.iface, "authorize", [Buffer.from(digest, "hex")]),
   )
-  const { hash } = await send(caller, transaction)
+  const { hash, receiveHeight } = await send(caller, transaction)
   const receipt = track(ctx, label, hash, (r) => {
     expectStatus(r, abortCode === 0 ? "SUCCESS" : "REVERT")
     assert.equal(r.receipt.contractId, contract.contractId.toString())
     assert.equal(r.receipt.abortCode, abortCode)
     assert.equal(r.outbox.length, 0, "authorization must not withdraw a native asset")
   })
-  await receipt.at("pending")
-  return { hash: hash.toString(), receipt }
+  if (!queued) await receipt.at("pending")
+  return { hash: hash.toString(), receipt, receiveHeight }
 }
 
-async function capture(ctx: Ctx, artifact: string, targetFile: string, output: string) {
+async function capture(ctx: Ctx, artifact: string, targetFile: string, output: string, batchMode: boolean) {
   const bitcoinTarget = (await readFile(targetFile, "utf8")).trim()
   const deployed = await deployAuthorizer(ctx, artifact)
   const contractId = deployed.contractId.toString()
@@ -142,13 +142,36 @@ async function capture(ctx: Ctx, artifact: string, targetFile: string, output: s
   const quota = await buyStorage(ctx, deployed, 96n)
   await quota.at("pending")
 
-  const unauthorized = await authorize(ctx, deployed, keyPair("admin"), commitment, "non-authorizer call", 1)
-  const authorized = await authorize(ctx, deployed, user, commitment, "authorize registered Bitcoin target", 0)
-  const overwrite = await authorize(ctx, deployed, user, "ff".repeat(32), "overwrite authorization", 2)
-  const calls = [unauthorized, authorized, overwrite]
+  const sendCalls = async () => {
+    const unauthorized = await authorize(ctx, deployed, keyPair("admin"), commitment, "non-authorizer call", 1, batchMode)
+    const authorized = await authorize(ctx, deployed, user, commitment, "authorize registered Bitcoin target", 0, batchMode)
+    const overwrite = await authorize(ctx, deployed, user, "ff".repeat(32), "overwrite authorization", 2, batchMode)
+    return [unauthorized, authorized, overwrite] as const
+  }
+  if (batchMode) await quota.at("latest")
+  const calls = batchMode
+    ? await executorDown(ctx.executor, "stop", async () => {
+      const queued = await sendCalls()
+      const required = Math.max(...queued.map((call) => call.receiveHeight)) + CONFIRMATION_DEPTH
+      await waitFor("all three queued inputs to be eligible", 120_000, async () => {
+        const frontier = (await ctx.zenon.ledger.getFrontierMomentum()).height
+        return frontier >= required ? frontier : undefined
+      })
+      return queued
+    })
+    : await sendCalls()
+  const [unauthorized, authorized, overwrite] = calls
   await Promise.all(calls.map((call) => call.receipt.at("latest")))
-  const [, , last] = await Promise.all(calls.map((call) => call.receipt.at("finalized")))
+  const finalized = await Promise.all(calls.map((call) => call.receipt.at("finalized")))
+  const last = finalized[2]
   const batchId = last.batchId
+  if (batchMode) {
+    assert.ok(finalized.every((r, i) => r.batchId === batchId && r.globalInputIndex === finalized[0].globalInputIndex + i),
+      "expected the three calls in order in the same batch")
+    const batch = await ctx.gateway.getBatch(DOMAIN_ID, batchId)
+    assert.equal(batch.inputs.length, 3, "expected the full batch to hold exactly the three calls")
+    console.log(`PASS: all three ordered calls settled in batch ${batchId}`)
+  }
   const api = ctx.zenon.embedded.settlement
   const [entry, contract, storage] = await Promise.all([
     api.getBatch(DOMAIN_ID, batchId),
@@ -189,6 +212,6 @@ if (mode === "caller") {
   const evidence: Evidence = JSON.parse(raw.toString("utf8"))
   await checkEvidence(evidence, evidence.selection)
 } else {
-  assert.equal(mode, "capture", "use caller, capture, or replay")
-  flow("contract-authorized-bitcoin-target", (ctx) => capture(ctx, first, second, third))
+  assert.ok(mode === "capture" || mode === "capture-batch", "use caller, capture, capture-batch, or replay")
+  flow("contract-authorized-bitcoin-target", (ctx) => capture(ctx, first, second, third, mode === "capture-batch"))
 }

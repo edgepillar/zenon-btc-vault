@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/zenon-network/go-zenon/common/trie"
@@ -44,6 +45,7 @@ type authorizationEvidence struct {
 		ContractID types.Hash `json:"contractId"`
 		BatchID    uint64     `json:"batchId"`
 		BitcoinTarget string  `json:"bitcoinTarget"`
+		SourceCodeHash types.Hash `json:"sourceCodeHash"`
 		Checkpoint struct {
 			ChainID uint64     `json:"chainIdentifier"`
 			Version uint64     `json:"version"`
@@ -270,7 +272,7 @@ func verifyAuthorizationPreconditions(record codec.BundleInputRecord, contract t
 	return nil
 }
 
-func verifyExecution(scratch string, auth authorizationEvidence, proved []definition.BatchEntry, inputs []ledger.Input, statement *authorizationStatement) error {
+func verifyExecution(scratch string, auth authorizationEvidence, proved []definition.BatchEntry, inputs []ledger.Input, statement *authorizationStatement, witness *batchWitness) error {
 	if len(inputs) == 0 || len(inputs) > maxInputs {
 		return errors.New("invalid devnet input count")
 	}
@@ -304,6 +306,7 @@ func verifyExecution(scratch string, auth authorizationEvidence, proved []defini
 	}
 	wanted := expectedCalls(auth)
 	found := make(map[types.Hash]uint64, len(wanted))
+	leaves := make(map[types.Hash][]byte)
 	for id, entry := range proved {
 		replayed, ok, err := driver.NextBatchTo(entry.LastInputSeq)
 		if err != nil || !ok {
@@ -315,6 +318,33 @@ func verifyExecution(scratch string, auth authorizationEvidence, proved []defini
 		records, err := codec.DecodeBundle(replayed.Bundle)
 		if err != nil || len(records) != len(replayed.Receipts) {
 			return fmt.Errorf("replayed bundle/receipt count differs for batch %d", id)
+		}
+		if witness != nil {
+			if uint64(id) == auth.Selection.BatchID {
+				first := stream.next - len(records)
+				if first < 0 || len(records) != 3 {
+					return errors.New("expected exactly three inputs in the selected batch")
+				}
+				witness.Inputs = inputs[first:stream.next]
+				if err := selectBatchState(witness, leaves, inputs[:first], entry.PreStateRoot); err != nil {
+					return err
+				}
+			} else {
+				for _, rec := range records {
+					effects, err := codec.DecodeExecutionResult(rec.ExecutionResult)
+					if err != nil {
+						return err
+					}
+					for _, change := range effects.StateDiff {
+						key := types.Hash(change.Key)
+						if change.Value == nil {
+							delete(leaves, key)
+						} else {
+							leaves[key] = bytes.Clone(change.Value)
+						}
+					}
+				}
+			}
 		}
 		for i, r := range replayed.Receipts {
 			in, err := codec.DecodeInput(records[i].InputData)
@@ -352,10 +382,37 @@ func verifyExecution(scratch string, auth authorizationEvidence, proved []defini
 	if stream.next != len(inputs) || len(found) != len(wanted) || found[auth.Sends.Overwrite] != auth.Selection.BatchID {
 		return errors.New("replay did not consume exactly the selected batch sequence and calls")
 	}
+	if witness != nil && (found[auth.Sends.Unauthorized] != witness.BatchID || found[auth.Sends.Authorize] != witness.BatchID) {
+		return errors.New("the selected batch does not contain all three authorization calls")
+	}
 	fmt.Printf("PASS: re-executed %d batches and %d L1-derived inputs from empty WASM genesis\n", len(proved), len(inputs))
 	fmt.Printf("PASS: matched Settlement pre/post-state, input, receipt, event and outbox roots, DA hash and flow summary\n")
 	fmt.Printf("AUTHORIZATION_BATCHES %d %d %d\n", found[auth.Sends.Unauthorized], found[auth.Sends.Authorize], found[auth.Sends.Overwrite])
 	return nil
+}
+
+func selectBatchState(witness *batchWitness, leaves map[types.Hash][]byte, prefix []ledger.Input, wantRoot types.Hash) error {
+	for path, value := range leaves {
+		witness.Leaves = append(witness.Leaves, batchLeaf{path, value})
+	}
+	slices.SortFunc(witness.Leaves, func(a, b batchLeaf) int { return bytes.Compare(a.Path[:], b.Path[:]) })
+	paths := make([]trie.Path, len(witness.Leaves))
+	values := make([][]byte, len(witness.Leaves))
+	for i, leaf := range witness.Leaves {
+		paths[i], values[i] = trie.Path(leaf.Path), leaf.Value
+	}
+	root, err := trie.RootOfLeaves(paths, values)
+	if err != nil || root != wantRoot {
+		return errors.New("the pre-state snapshot does not reproduce the proven batch root")
+	}
+	for _, input := range prefix {
+		module := input.Ctx.SourceData
+		if len(module) > 0 && types.NewHash(module) == witness.ModuleHash {
+			witness.Module = module
+			return nil
+		}
+	}
+	return errors.New("could not identify the authorizer module in its deployment input")
 }
 
 func checkRefusals(scratch string, auth authorizationEvidence, data executionCapture, entries []definition.BatchEntry) error {
@@ -387,14 +444,14 @@ func checkRefusals(scratch string, auth authorizationEvidence, data executionCap
 	}
 	changed := append([]ledger.Input(nil), data.Inputs...)
 	changed[authorizeIndex].Ctx.L1Sender = changed[unauthorizedIndex].Ctx.L1Sender
-	if err := verifyExecution(scratch, auth, entries, changed, nil); !errors.Is(err, errCommitmentMismatch) {
+	if err := verifyExecution(scratch, auth, entries, changed, nil, nil); !errors.Is(err, errCommitmentMismatch) {
 		return fmt.Errorf("caller substitution did not cause a commitment mismatch: %v", err)
 	}
 	fmt.Println("PASS: refused a modified Settlement proof value and a substituted authorization sender")
 	return nil
 }
 
-func writeCapture(name string, data executionCapture) error {
+func writeCapture(name string, data any) error {
 	raw, err := json.Marshal(data)
 	if err != nil || len(raw)+1 > captureLimit {
 		return errors.New("execution capture exceeds its byte limit or could not be encoded")
@@ -411,9 +468,9 @@ func writeCapture(name string, data executionCapture) error {
 }
 
 func run(args []string) error {
-	const usage = "use capture <authorization> <execution-output> <scratch> or replay/statement <authorization> <execution-capture> <scratch> <sha256>"
+	const usage = "use capture <authorization> <execution-output> <scratch>, capture-batch with an additional <batch-output>, or replay/statement <authorization> <execution-capture> <scratch> <sha256>"
 	if len(args) < 4 || (args[0] == "capture" && len(args) != 4) ||
-		(args[0] != "capture" && (len(args) != 5 || (args[0] != "replay" && args[0] != "statement"))) {
+		(args[0] != "capture" && (len(args) != 5 || (args[0] != "replay" && args[0] != "statement" && args[0] != "capture-batch"))) {
 		return errors.New(usage)
 	}
 	auth, sha, err := loadAuthorization(args[1])
@@ -421,7 +478,7 @@ func run(args []string) error {
 		return err
 	}
 	var data executionCapture
-	if args[0] == "capture" {
+	if args[0] == "capture" || args[0] == "capture-batch" {
 		data, err = collect(auth, sha)
 		if err != nil {
 			return err
@@ -449,13 +506,23 @@ func run(args []string) error {
 		return err
 	}
 	var statement *authorizationStatement
+	var witness *batchWitness
 	if args[0] == "statement" {
 		statement = &authorizationStatement{
 			AuthorizationSHA256: sha, ExecutionSHA256: strings.TrimSpace(args[4]),
 			BitcoinTarget: auth.Selection.BitcoinTarget, Commitment: auth.Storage.Result.Value,
 		}
 	}
-	if err := verifyExecution(args[3], auth, entries, data.Inputs, statement); err != nil {
+	if args[0] == "capture-batch" {
+		checkpoint := auth.Selection.Checkpoint
+		witness = &batchWitness{
+			Schema: 1, BatchID: auth.Selection.BatchID,
+			CheckpointHash: checkpoint.Hash, CheckpointHeight: checkpoint.Height,
+			SettlementProof: data.Proofs[auth.Selection.BatchID],
+			ContractID: auth.Selection.ContractID, ModuleHash: auth.Selection.SourceCodeHash,
+		}
+	}
+	if err := verifyExecution(args[3], auth, entries, data.Inputs, statement, witness); err != nil {
 		return err
 	}
 	if err := checkRefusals(args[3], auth, data, entries); err != nil {
@@ -470,6 +537,13 @@ func run(args []string) error {
 			return err
 		}
 		fmt.Printf("AUTHORIZATION_STATEMENT_JSON %s\n", raw)
+	}
+	if witness != nil {
+		if err := writeCapture(args[4], witness); err != nil {
+			return err
+		}
+		fmt.Printf("PASS: captured batch %d with %d inputs and %d authenticated pre-state leaves\n",
+			witness.BatchID, len(witness.Inputs), len(witness.Leaves))
 	}
 	return nil
 }
