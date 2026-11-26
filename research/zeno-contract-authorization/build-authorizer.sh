@@ -6,11 +6,16 @@ work_dir="$(dirname "$devnet")"
 sdk="$work_dir/authorizer-sdk"
 src="$devnet/.sources"
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+mode="${ZENO_MODE:-capture}"
+test "$mode" = capture || test "$mode" = replay
 
 # Keep the contract build overlay outside the checkout managed by devnet.sh.
 while read -r repo_path url revision; do
   case "$repo_path" in
-    zeno/zeno-contract-sdk-rs) destination="$sdk" ;;
+    zeno/zeno-contract-sdk-rs)
+      [ "$mode" = capture ] || continue
+      destination="$sdk"
+      ;;
     zeno/zeno-executor|zenon-network/go-zenon) destination="$src/$repo_path" ;;
     *) continue ;;
   esac
@@ -20,8 +25,26 @@ while read -r repo_path url revision; do
   test "$(git -C "$destination" rev-parse HEAD)" = "$revision"
 done < "$devnet/sources.txt"
 
+executor="$src/zeno/zeno-executor"
+replay="$executor/cmd/vault-execution-replay"
+mkdir "$replay"
+cp "$here/../zeno-execution-replay/replay.go" "$replay/"
 (
-  cd "$src/zeno/zeno-executor"
+  cd "$executor"
+  go version
+  GOWORK=off go build -mod=readonly -trimpath -o "$work_dir/verify-execution" ./cmd/vault-execution-replay
+)
+# This source overlay belongs to the build. Leave the pinned devnet checkout clean.
+rm "$replay/replay.go"
+rmdir "$replay"
+printf 'Execution verifier SHA-256 '
+sha256sum < "$work_dir/verify-execution" | cut -d ' ' -f 1
+if [ "$mode" = replay ]; then
+  exit 0
+fi
+
+(
+  cd "$executor"
   GOWORK=off go build -mod=readonly -trimpath -o "$work_dir/zeno-exec" ./cmd/zeno-exec
 )
 
