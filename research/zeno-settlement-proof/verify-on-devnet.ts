@@ -2,7 +2,7 @@ import assert from "node:assert/strict"
 import { createHash } from "node:crypto"
 import { readFile, stat, writeFile } from "node:fs/promises"
 import { AccountBlockTemplate, EmbeddedContract, SETTLEMENT_ADDRESS, ZNN_ZTS, settlement } from "znn-typescript-sdk"
-import { CHAIN_ID, CONFIRMATION_DEPTH, FUSE_QSR, PILLAR_URL, connect, keyPair, sendAndWait, waitHeight } from "../src/devnet.js"
+import { CHAIN_ID, CONFIRMATION_DEPTH, FUSE_QSR, PILLAR_URL, connect, keyPair, sendAndWait, waitFor, waitHeight } from "../src/devnet.js"
 
 const JOURNAL = "583827c2db6bb87baff06a8492742da5e9c2327f7009b73b4538de2b99a2cfcc"
 const VK_HASH = "b3e14fe98042c3ff6f219172965bddd8dda586c556adac9b4acbd285e13d3cdb"
@@ -65,6 +65,10 @@ async function main(fixturePath: string, guestKey: string, evidencePath: string)
   const expected = Buffer.concat([Buffer.from(JOURNAL, "hex"), proofDigest])
 
   const zenon = await connect()
+  await waitFor("a version 3 devnet Momentum", 180_000, async () => {
+    const header = await zenon.ledger.getFrontierMomentum()
+    return header.version === 3 && header.chainIdentifier === CHAIN_ID && header.stateRoot ? header : undefined
+  })
   const sender = keyPair("admin")
   const fuse = await sendAndWait(sender, zenon.embedded.plasma.fuse(sender.address, FUSE_QSR))
   assert.equal(fuse.accepted, true, "devnet plasma fusion failed")

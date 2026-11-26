@@ -116,8 +116,6 @@ jobs:
           cp research/zeno-settlement-proof/verify-on-devnet.ts "$work_dir/devnet/flows/"
           (
             cd "$work_dir/node"
-            go mod edit -require github.com/consensys/gnark@v0.10.1-0.20240504023521-d9bfacd7cb60 \
-              -require github.com/consensys/gnark-crypto@v0.14.0
             timeout 8m go mod tidy
             timeout 10m go test -tags devnet ./vm/embedded/implementation ./vm/embedded -run='^$'
           )

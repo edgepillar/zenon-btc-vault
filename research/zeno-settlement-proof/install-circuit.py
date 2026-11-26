@@ -17,6 +17,7 @@ MAX_MEMBER_COUNT = 64
 VK_BYTES = 428
 VK_HASH = "b3e14fe98042c3ff6f219172965bddd8dda586c556adac9b4acbd285e13d3cdb"
 FILES = {"groth16_vk.bin", "groth16_pk.bin", "groth16_circuit.bin", "constraints.json"}
+FREE_SPACE_FLOOR = 10 * 1024**3
 
 
 class PinnedStream:
@@ -63,6 +64,8 @@ def extract(response, destination):
                     raise ValueError("Duplicate circuit archive member")
                 if path.name == "groth16_vk.bin" and member.size != VK_BYTES:
                     raise ValueError("Unexpected circuit verifying key size")
+                if shutil.disk_usage(destination).free < FREE_SPACE_FLOOR + member.size:
+                    raise ValueError("Insufficient disk headroom for a circuit member")
                 with archive.extractfile(member) as source, (destination / path.name).open("xb") as output:
                     shutil.copyfileobj(source, output, length=1024**2)
                 seen.add(path.name)
