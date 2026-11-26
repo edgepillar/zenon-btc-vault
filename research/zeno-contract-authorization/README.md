@@ -32,8 +32,31 @@ batch, and a modified leaf. Bitcoin Core mines the original registered bytes
 only after the local verifier succeeds and the harness independently rebuilds
 the commitment from the registration.
 
+## Recorded capture
+
+The [native run](https://github.com/edgepillar/zenon-btc-vault/actions/runs/45782195624/attempts/1)
+at `a142fea7e46dc0c78eab814e35cf6406ce810e26` confirmed the following results.
+
+| Control | Observed result |
+| --- | --- |
+| Call from another devnet user | Reverted in batch 4 |
+| Call from the designated authorizer | Succeeded in batch 5 |
+| Attempted second write | Reverted in batch 6 |
+| Batch 6 state proof | Rejected at Momentum 117 and accepted at Momentum 121. Eligibility began at Momentum 118. |
+| Bitcoin Core 32.1 regtest | Mined the registered release and confirmed the 999,000 satoshi output |
+
+The [capture bytes](evidence.json) match the recorded SHA-256 in
+[`evidence.sha256`](evidence.sha256). The replay selects the capture by that
+digest before using its recorded checkpoint and contract pins. It rechecks
+both proof layers and the refusal cases without running either network. The
+native run separately checked the receipt results and Bitcoin confirmation.
+
+## Trust assumptions
+
 The source is [Zeno devnet `cf1c9c0`](https://github.com/Zeno-L2/zeno-devnet/tree/cf1c9c0e0f0ca3b257bdbd019c5589c2c27f748f)
-with its pinned dependencies. The capture selects checkpoints from its own
+with its pinned dependencies. The WASM build uses the Rust SDK from that
+checkout's source manifest and validates using the executor revision the
+devnet runs. The capture selects checkpoints from its own
 isolated producer and relies on the Phase 1 executor attestation for execution
 correctness. Settlement's eligibility timer is defined in the
 [pinned batch acceptance specification](https://github.com/Zeno-L2/zeno-docs/blob/d74ba1fc4b01583af0daf33a2dedfc84ea2b9419/phase-1/tickets/epic-1-l1-settlement/E1-07-submitbatch-acceptance-and-finality.md).
