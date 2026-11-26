@@ -1,8 +1,8 @@
-name: Zeno contract authorization
+name: Zeno contract execution replay
 
 on:
   push:
-    branches: [prove-devnet-contract-authorization]
+    branches: [prove-devnet-contract-authorization, replay-devnet-execution]
   workflow_dispatch:
     inputs:
       capture_fresh:
@@ -19,6 +19,7 @@ jobs:
     timeout-minutes: 80
     env:
       ZENO_DEVNET_SHA: cf1c9c0e0f0ca3b257bdbd019c5589c2c27f748f
+      GOTOOLCHAIN: go1.26.0
       DEVNET_BIND_ADDRESS: 127.0.0.1
       GIT_TERMINAL_PROMPT: '0'
       GIT_CONFIG_COUNT: '2'
@@ -45,7 +46,7 @@ jobs:
           work_dir="$(mktemp -d "$RUNNER_TEMP/vault-authorization.XXXXXX")"
           devnet="$work_dir/devnet"
           mode=replay
-          if [ "$CAPTURE_FRESH" = true ] || [ ! -f research/zeno-contract-authorization/evidence.sha256 ]; then
+          if [ "$CAPTURE_FRESH" = true ] || [ ! -f research/zeno-execution-replay/execution.sha256 ]; then
             mode=capture
             free_bytes="$(df -PB1 "$RUNNER_TEMP" | awk 'NR == 2 {print $4}')"
             required_bytes="$((16 * 1024 * 1024 * 1024))"
@@ -70,13 +71,14 @@ jobs:
             sha256sum --check --strict
           timeout 60s npm exec --offline -- tsx flows/vault-evidence.ts --verify "$old_evidence"
 
-      - name: Build and validate the authorizer WASM
-        if: env.ZENO_MODE == 'capture'
+      - name: Build the execution verifier and prepare capture binaries
         shell: bash
         run: |
           umask 077
           timeout 12m bash research/zeno-contract-authorization/build-authorizer.sh "$ZENO_DEVNET_DIR"
-          bash .github/scripts/install-bitcoind.sh "$ZENO_WORK"
+          if [ "$ZENO_MODE" = capture ]; then
+            bash .github/scripts/install-bitcoind.sh "$ZENO_WORK"
+          fi
 
       - name: Start the pinned devnet and check the transport switch
         if: env.ZENO_MODE == 'capture'
@@ -93,7 +95,7 @@ jobs:
           cd "$ZENO_DEVNET_DIR"
           timeout 18m bash scripts/devnet.sh config
 
-      - name: Prove the contract authorized the registered regtest release
+      - name: Verify state and re-execute batches before the regtest release
         if: env.ZENO_MODE == 'capture'
         shell: bash
         run: |
@@ -101,7 +103,8 @@ jobs:
           datadir="$(mktemp -d "$ZENO_WORK/bitcoin.XXXXXX")"
           PYTHONPATH="$GITHUB_WORKSPACE" timeout 32m python3 -B research/zeno-contract-authorization/regtest_capture.py \
             --bitcoind "$ZENO_WORK/bitcoind" --datadir "$datadir" --devnet "$ZENO_DEVNET_DIR" \
-            --artifact "$ZENO_WORK/vault_authorizer" --target "$ZENO_WORK/target.hex" --evidence "$ZENO_WORK/evidence.json"
+            --artifact "$ZENO_WORK/vault_authorizer" --target "$ZENO_WORK/target.hex" --evidence "$ZENO_WORK/evidence.json" \
+            --execution-replay "$ZENO_WORK/verify-execution" --execution-evidence "$ZENO_WORK/execution.json"
 
       - name: Replay the pinned contract state proof
         if: env.ZENO_MODE == 'replay'
@@ -111,6 +114,18 @@ jobs:
           cd "$ZENO_DEVNET_DIR"
           timeout 60s npm exec --offline -- tsx flows/vault-authorizer.ts replay \
             "$evidence/evidence.json" "$(cat "$evidence/evidence.sha256")"
+
+      - name: Re-execute the pinned input stream without devnet or Bitcoin
+        if: env.ZENO_MODE == 'replay'
+        shell: bash
+        run: |
+          umask 077
+          evidence="$GITHUB_WORKSPACE/research/zeno-execution-replay"
+          cd "$ZENO_DEVNET_DIR"
+          timeout 60s npm exec --offline -- tsx flows/vault-authorizer.ts replay \
+            "$evidence/authorization.json" "$(cat "$evidence/authorization.sha256")"
+          timeout 60s "$ZENO_WORK/verify-execution" replay \
+            "$evidence/authorization.json" "$evidence/execution.json" "$ZENO_WORK" "$(cat "$evidence/execution.sha256")"
 
       - name: Report capture bytes and their digest
         if: always() && env.ZENO_MODE == 'capture'
@@ -129,6 +144,16 @@ jobs:
           sha256sum < "$evidence" | cut -d ' ' -f 1
           printf 'VAULT_CAPTURE_JSON '
           cat "$evidence"
+          execution="$ZENO_WORK/execution.json"
+          if [ ! -f "$execution" ]; then
+            test "$OUTCOME" != success
+            exit
+          fi
+          test "$(stat --format=%s "$execution")" -le 49152
+          printf 'VAULT_EXECUTION_SHA256 '
+          sha256sum < "$execution" | cut -d ' ' -f 1
+          printf 'VAULT_EXECUTION_JSON '
+          cat "$execution"
 
       - name: Stop the isolated devnet
         if: always() && env.ZENO_MODE == 'capture'

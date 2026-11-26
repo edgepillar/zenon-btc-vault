@@ -25,7 +25,7 @@ from regtest import (
 from withdrawal_authorization import REGTEST_GENESIS, encode_bitcoin_target
 
 
-def run_capture(rpc, devnet, artifact, target_file, evidence_file):
+def run_capture(rpc, devnet, artifact, target_file, evidence_file, replay_binary, execution_file):
     rpc.call("createwallet", "funding")
     miner, recipient = [rpc.call("getnewaddress", "", "bech32", wallet=True) for _ in range(2)]
     script = rpc.call("validateaddress", recipient)["scriptPubKey"]
@@ -67,23 +67,29 @@ def run_capture(rpc, devnet, artifact, target_file, evidence_file):
     ).hexdigest()
     require(selection["bitcoinTarget"] == target.hex(), "The verified target differs from registration")
     require(evidence["storage"]["result"]["value"] == commitment, "The proof did not bind the registered target")
+    subprocess.run([
+        replay_binary, "capture", evidence_file, execution_file, target_file.parent,
+    ], check=True, timeout=120)
     require(rpc.call("getbestblockhash") == tip, "The Bitcoin tip changed while verifying Zeno")
     require(not rpc.call("getrawmempool"), "A transaction appeared in the mempool before authorization")
     require(rpc.call("getblockhash", 0) == genesis, "The Bitcoin network changed before release")
     release = registered.release_signed_transaction(withdrawal)
     require(release == signed, "The registration did not return the original bytes")
     confirm_spend(rpc, release, outpoint, script, miner)
-    print("PASS: mined the exact registered Bitcoin release after verifying the Zeno contract state", flush=True)
+    print("PASS: mined the exact registered Bitcoin release after verifying Zeno state and re-executing the batches", flush=True)
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    for name in ("bitcoind", "datadir", "devnet", "artifact", "target", "evidence"):
+    for name in ("bitcoind", "datadir", "devnet", "artifact", "target", "evidence", "execution-replay", "execution-evidence"):
         parser.add_argument(f"--{name}", required=True, type=Path)
     args = parser.parse_args()
     try:
         with start_regtest(args.bitcoind.resolve(), args.datadir.resolve()) as rpc:
-            run_capture(rpc, args.devnet.resolve(), args.artifact.resolve(), args.target.resolve(), args.evidence.resolve())
+            run_capture(
+                rpc, args.devnet.resolve(), args.artifact.resolve(), args.target.resolve(), args.evidence.resolve(),
+                args.execution_replay.resolve(), args.execution_evidence.resolve(),
+            )
     except (RegtestError, OSError, ValueError, KeyError, subprocess.SubprocessError) as exc:
         reason = str(exc) if isinstance(exc, RegtestError) else type(exc).__name__
         parser.exit(1, f"Contract-authorized regtest failed: {reason}\n")
