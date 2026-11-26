@@ -22,6 +22,8 @@ The [Zeno contract authorization fixture](research/zeno-contract-authorization/R
 
 The execution replay fixture adds a second check before release. It rebuilds the devnet batches from their L1 inputs and compares the computed commitments with the proven Settlement entries. [Execution replay evidence](research/zeno-execution-replay/README.md)
 
+The Groth16 experiment proves the selected authorization call and its two state writes against a public statement derived from the recorded replay. [Authorization proof experiment](research/authorization-proof/README.md)
+
 ## Trust and scope
 
 The mock holds an already signed transaction in cleartext and controls its release inside the test process. The registration uses trusted setup data and Bitcoin Core's local acceptance policy at the time of registration. The outbox fixture trusts its synthetic batch root. The contract fixture trusts the isolated devnet's checkpoint selection and executor attestation. Zenon mainnet consensus finality, asset-backed authorization, confidential setup, and witness encryption remain open.

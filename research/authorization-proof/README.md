@@ -30,6 +30,25 @@ tool requires zero additional proof commitments. The hosted experiment uses
 an ephemeral circuit-specific setup and the public synthetic capture. The
 retained bundle holds the verifying key and proof.
 
+## Recorded run
+
+The [hosted proof run](https://github.com/edgepillar/zenon-btc-vault/actions/runs/45850625634)
+at `f11b33217abf1a28da5964bd721fe38cbcb8845d` used Linux amd64, Go 1.26.8
+and gnark 0.16.5. It selected the successful call from devnet batch 5 and
+proved the authorization statement with 663,415 constraints and zero
+additional commitments. The compressed gnark proof is 164 bytes and the
+compressed verifying key is 1,356 bytes. The proof stage took about 114
+seconds and peaked at 1.58 GiB of resident memory. This measurement includes
+compilation of the circuit, setup, proving and both positive and negative
+verification controls.
+
+The circuit refused modified caller and recipient witnesses. The existing
+proof failed verification after a change to the selected capture context or
+state-diff hash. The [retained proof bundle](proof.json) matches its
+[SHA-256 selection](proof.sha256). Subsequent pushes verify the retained
+proof under the expected statement from a fresh execution replay of the
+same captured inputs.
+
 ## Proof boundary
 
 The circuit covers the authorization rule and its two writes. The external
