@@ -6,4 +6,6 @@ The flow creates one withdrawal in the devnet's Phase 1 Settlement domain. It ca
 
 The selected checkpoints rely on the pinned devnet run and its controlled local node. The authenticated Settlement deadline is a property of the entry at that checkpoint. It carries no independent consensus-finality result. The withdrawal pays a devnet Zenon address in synthetic ZNN. A Bitcoin vault adapter still needs a source authorization that commits to its Bitcoin network, outpoint, amount, and recipient script.
 
+The hosted setup waits for the producer and RPC node to pass the devnet's scheduled transport switch before running Settlement configuration. If progress stalls, it can restart the isolated bootstrap containers once using their existing state. The withdrawal flow starts only after configuration and gateway readiness succeed.
+
 After capture and offline replay succeed, the workflow reports the verified JSON and its SHA-256. A completed capture from a failed run is labeled unverified. From the pinned devnet checkout with its locked dependencies installed, place `capture.ts` in `flows/vault-evidence.ts` and run the offline replay against captured JSON with `npm exec --offline -- tsx flows/vault-evidence.ts --verify evidence.json`. Authenticate the recorded checkpoints against the selected run and pin the JSON digest before using it as a fixture.

@@ -6,6 +6,7 @@ on:
     paths:
       - .github/workflows/zeno-withdrawal-evidence.yml
       - research/zeno-withdrawal/capture.ts
+      - research/zeno-withdrawal/bootstrap.py
 
 permissions:
   contents: read
@@ -60,11 +61,18 @@ jobs:
           timeout 2m npm run typecheck
           printf 'ZENO_DEVNET_DIR=%s\nZENO_EVIDENCE_FILE=%s\n' "$devnet" "$work_dir/evidence.json" >> "$GITHUB_ENV"
 
-      - name: Start and configure the pinned devnet
+      - name: Start the pinned devnet and check the transport switch
         shell: bash
         run: |
           cd "$ZENO_DEVNET_DIR"
-          timeout 22m bash scripts/devnet.sh up
+          timeout 8m bash scripts/devnet.sh up --no-config
+          timeout 10m python3 -B "$GITHUB_WORKSPACE/research/zeno-withdrawal/bootstrap.py"
+
+      - name: Configure Settlement and wait for the gateway
+        shell: bash
+        run: |
+          cd "$ZENO_DEVNET_DIR"
+          timeout 18m bash scripts/devnet.sh config
 
       - name: Capture the devnet withdrawal
         shell: bash
@@ -95,7 +103,7 @@ jobs:
             cat "$ZENO_EVIDENCE_FILE"
           fi
           docker ps -a --filter label=com.docker.compose.project=zeno-devnet --format '{{.Names}} {{.Status}}'
-          for service in gateway executor; do
+          for service in pillar pillar2 pillar3 rpc gateway executor; do
             container="$(docker ps -aq --filter label=com.docker.compose.project=zeno-devnet --filter "label=com.docker.compose.service=$service")"
             if [ -n "$container" ]; then
               docker logs --tail 20 "$container" 2>&1 |
