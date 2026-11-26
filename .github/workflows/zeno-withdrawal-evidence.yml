@@ -1,0 +1,152 @@
+name: Zeno devnet withdrawal evidence
+
+on:
+  push:
+    branches: [zeno-withdrawal-evidence]
+    paths:
+      - .github/workflows/zeno-withdrawal-evidence.yml
+      - research/zeno-withdrawal/capture.ts
+      - research/zeno-withdrawal/bootstrap.py
+      - research/zeno-withdrawal/evidence.json
+  workflow_dispatch:
+    inputs:
+      capture_fresh:
+        description: Start an isolated devnet and capture a fresh withdrawal
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  devnet:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 65
+    env:
+      ZENO_DEVNET_SHA: cf1c9c0e0f0ca3b257bdbd019c5589c2c27f748f
+      DEVNET_BIND_ADDRESS: 127.0.0.1
+      GIT_TERMINAL_PROMPT: '0'
+      GIT_CONFIG_COUNT: '2'
+      GIT_CONFIG_KEY_0: url.https://github.com/.insteadOf
+      GIT_CONFIG_VALUE_0: 'ssh://git@github.com/'
+      GIT_CONFIG_KEY_1: url.https://github.com/.insteadOf
+      GIT_CONFIG_VALUE_1: 'git@github.com:'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Select the evidence source
+        shell: bash
+        env:
+          CAPTURE_FRESH: ${{ inputs.capture_fresh }}
+        run: |
+          if [ "$CAPTURE_FRESH" = "true" ]; then
+            echo 'ZENO_MODE=capture' >> "$GITHUB_ENV"
+          else
+            evidence="$GITHUB_WORKSPACE/research/zeno-withdrawal/evidence.json"
+            printf '%s  %s\n' '81c5739a3632cea328626b5ddde0732f2324d444800c2b532f8583770538bb21' "$evidence" |
+              sha256sum --check --strict
+            printf 'ZENO_MODE=replay\nZENO_EVIDENCE_FILE=%s\n' "$evidence" >> "$GITHUB_ENV"
+          fi
+
+      - name: Check the disposable runner capacity
+        if: env.ZENO_MODE == 'capture'
+        shell: bash
+        run: |
+          free_bytes="$(df -PB1 "$RUNNER_TEMP" | awk 'NR == 2 {print $4}')"
+          required_bytes="$((16 * 1024 * 1024 * 1024))"
+          echo "Available bytes $free_bytes, required $required_bytes including the 10 GiB floor"
+          test "$free_bytes" -ge "$required_bytes"
+          docker compose version
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24.17.0
+          package-manager-cache: false
+
+      - name: Prepare the pinned devnet and type-check the capture flow
+        shell: bash
+        run: |
+          umask 077
+          work_dir="$(mktemp -d "$RUNNER_TEMP/vault-zeno.XXXXXX")"
+          devnet="$work_dir/devnet"
+          git init --quiet "$devnet"
+          timeout 120s git -C "$devnet" fetch --quiet --depth 1 https://github.com/Zeno-L2/zeno-devnet.git "$ZENO_DEVNET_SHA"
+          git -C "$devnet" checkout --quiet --detach FETCH_HEAD
+          test "$(git -C "$devnet" rev-parse HEAD)" = "$ZENO_DEVNET_SHA"
+          # The unprivileged gateway reads this public file through a Docker bind mount.
+          chmod 0644 "$devnet/config/gateway.json"
+          cp research/zeno-withdrawal/capture.ts "$devnet/flows/vault-evidence.ts"
+          cd "$devnet"
+          timeout 8m npm ci --no-audit --no-fund
+          timeout 2m npm run typecheck
+          printf 'ZENO_DEVNET_DIR=%s\n' "$devnet" >> "$GITHUB_ENV"
+          if [ "$ZENO_MODE" = "capture" ]; then
+            printf 'ZENO_EVIDENCE_FILE=%s\n' "$work_dir/evidence.json" >> "$GITHUB_ENV"
+          fi
+
+      - name: Start the pinned devnet and check the transport switch
+        if: env.ZENO_MODE == 'capture'
+        shell: bash
+        run: |
+          cd "$ZENO_DEVNET_DIR"
+          timeout 8m bash scripts/devnet.sh up --no-config
+          timeout 10m python3 -B "$GITHUB_WORKSPACE/research/zeno-withdrawal/bootstrap.py"
+
+      - name: Configure Settlement and wait for the gateway
+        if: env.ZENO_MODE == 'capture'
+        shell: bash
+        run: |
+          cd "$ZENO_DEVNET_DIR"
+          timeout 18m bash scripts/devnet.sh config
+
+      - name: Capture the devnet withdrawal
+        if: env.ZENO_MODE == 'capture'
+        shell: bash
+        run: |
+          cd "$ZENO_DEVNET_DIR"
+          timeout 25m npm exec --offline -- tsx flows/vault-evidence.ts
+
+      - name: Replay the captured proof and report the evidence digest
+        shell: bash
+        run: |
+          cd "$ZENO_DEVNET_DIR"
+          timeout 60s npm exec --offline -- tsx flows/vault-evidence.ts --verify "$ZENO_EVIDENCE_FILE"
+          test "$(stat --format=%s "$ZENO_EVIDENCE_FILE")" -le 32768
+          printf 'ZENO_EVIDENCE_SHA256 '
+          sha256sum < "$ZENO_EVIDENCE_FILE" | cut -d ' ' -f 1
+          if [ "$ZENO_MODE" = "capture" ]; then
+            printf 'ZENO_EVIDENCE_JSON '
+            cat "$ZENO_EVIDENCE_FILE"
+          fi
+
+      - name: Report the isolated services on failure
+        if: failure() && env.ZENO_MODE == 'capture'
+        shell: bash
+        run: |
+          if [ -n "${ZENO_EVIDENCE_FILE:-}" ] && [ -f "$ZENO_EVIDENCE_FILE" ] &&
+            [ "$(stat --format=%s "$ZENO_EVIDENCE_FILE")" -le 32768 ]; then
+            printf 'ZENO_UNVERIFIED_SHA256 '
+            sha256sum < "$ZENO_EVIDENCE_FILE" | cut -d ' ' -f 1
+            printf 'ZENO_UNVERIFIED_JSON '
+            cat "$ZENO_EVIDENCE_FILE"
+          fi
+          docker ps -a --filter label=com.docker.compose.project=zeno-devnet --format '{{.Names}} {{.Status}}'
+          for service in pillar pillar2 pillar3 rpc gateway executor; do
+            container="$(docker ps -aq --filter label=com.docker.compose.project=zeno-devnet --filter "label=com.docker.compose.service=$service")"
+            if [ -n "$container" ]; then
+              docker logs --tail 20 "$container" 2>&1 |
+                sed -E 's#https?://[^[:space:]]+#[endpoint]#g' |
+                awk 'length($0) <= 500 && tolower($0) !~ /(secret|key|seed|mnemonic|authorization)/'
+            fi
+          done
+
+      - name: Stop the isolated devnet
+        if: always() && env.ZENO_MODE == 'capture'
+        shell: bash
+        run: |
+          if [ -n "${ZENO_DEVNET_DIR:-}" ]; then
+            cd "$ZENO_DEVNET_DIR"
+            timeout 120s bash scripts/devnet.sh down
+          fi
