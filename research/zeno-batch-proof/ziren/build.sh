@@ -24,7 +24,8 @@ guest="$executor/cmd/vault-batch-guest"
 mkdir "$guest"
 cp "$source_dir/guest.go" "$source_dir/batch-witness.go" "$guest/"
 cp "$source_dir/ziren/hash-ziren.go" "$zenon/common/crypto/"
-python3 -B - "$zenon/common/crypto/hash.go" <<'PY'
+python3 -B - "$zenon/common/crypto/hash.go" "$ziren/crates/go-runtime/zkvm_overlay/runtime/sys_linux_mipsx.s" <<'PY'
+import hashlib
 from pathlib import Path
 from sys import argv
 
@@ -42,6 +43,35 @@ if text.count(original) != 1:
 path.write_text(text.replace(original, """func Hash(data ...[]byte) []byte {
 \treturn zirenSHA3(data...)
 }"""), encoding="utf-8")
+
+overlay = Path(argv[2])
+text = overlay.read_text(encoding="utf-8")
+start = text.index("TEXT runtime·futex(SB)")
+end = text.index("\n\n\n// int32 clone", start)
+old_futex = hashlib.sha256(text[start:end].encode()).hexdigest()
+if old_futex != "8b8ea773db91545c855d5159375941c853eb4276c45d9dd256f5213a8d0985d1":
+    raise SystemExit("Pinned futex implementation differs")
+# The VM's clone stub creates no worker threads. Preserve the nonblocking
+# futex results for an empty wait queue or a changed futex word.
+futex = """TEXT runtime·futex(SB),NOSPLIT,$0-28
+\tMOVW\top+4(FP), R4
+\tMOVW\t$129, R5 // FUTEX_WAKE_PRIVATE
+\tBEQ\tR4, R5, futexwake
+\tMOVW\t$128, R5 // FUTEX_WAIT_PRIVATE
+\tBNE\tR4, R5, futexunsupported
+\tMOVW\taddr+0(FP), R4
+\tMOVW\t(R4), R5
+\tMOVW\tval+8(FP), R6
+\tBEQ\tR5, R6, futexunsupported
+\tMOVW\t$-11, R2 // EAGAIN
+\tMOVW\tR2, ret+24(FP)
+\tRET
+futexwake:
+\tMOVW\tR0, ret+24(FP)
+\tRET
+futexunsupported:
+\tUNDEF"""
+overlay.write_text(text[:start] + futex + text[end:], encoding="utf-8")
 PY
 
 runtime="github.com/ProjectZKM/Ziren/crates/go-runtime/zkvm_runtime"
