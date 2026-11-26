@@ -126,12 +126,13 @@ fn main() {
             let digest = hex::decode(digest).expect("witness SHA-256");
             assert_eq!(digest.len(), 32, "expected a SHA-256 digest");
             assert!(!Path::new(file).exists(), "proof output already exists");
+            println!("BATCH_PROVER_SETUP_STARTED");
             let (pk, _) = client.setup(ELF);
+            println!("BATCH_PROVER_CORE_STARTED");
             let proof = client
                 .prove(&pk, stdin(&raw))
                 .core()
                 .cycle_limit(MAX_CYCLES)
-                .shard_size(1 << 18)
                 .shard_batch_size(1)
                 .run()
                 .expect("CPU proof generation failed");

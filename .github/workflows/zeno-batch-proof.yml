@@ -14,14 +14,18 @@ permissions:
 jobs:
   proof:
     runs-on: ubuntu-24.04
-    timeout-minutes: 90
+    timeout-minutes: 125
     env:
       GIT_TERMINAL_PROMPT: '0'
       GOTOOLCHAIN: local
       GOWORK: 'off'
       CARGO_BUILD_JOBS: '3'
-      RAYON_NUM_THREADS: '2'
-      ELEMENT_THRESHOLD: '35000000'
+      RUSTFLAGS: '-C target-cpu=native'
+      RAYON_NUM_THREADS: '4'
+      ELEMENT_THRESHOLD: '55000000'
+      TRACE_GEN_WORKERS: '1'
+      CHECKPOINTS_CHANNEL_CAPACITY: '2'
+      RECORDS_AND_TRACES_CHANNEL_CAPACITY: '1'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -77,19 +81,21 @@ jobs:
       - name: Prove all recorded batch inputs
         if: hashFiles('research/zeno-batch-proof/batch.json') != ''
         shell: bash
+        env:
+          RUST_LOG: zkm_core_machine::utils::prove=info,zkm_prover=info
         run: |
           cd research/zeno-batch-proof
           digest="$(cat batch.sha256)"
           ulimit -f 262144
           /usr/bin/time -f 'BATCH_PROVER_ELAPSED_SECONDS %e MAX_RSS_KIB %M EXIT %x' \
-            timeout --kill-after=20s 50m "$ZENO_PROOF_WORK/target/release/simple-go-host" prove \
+            timeout --kill-after=20s 100m "$ZENO_PROOF_WORK/target/release/simple-go-host" prove \
             batch.json "$digest" "$ZENO_PROOF_WORK/proof.bin"
 
       - name: Verify the serialized proof in a separate process
         if: hashFiles('research/zeno-batch-proof/batch.json') != ''
         shell: bash
         run: |
-          timeout 5m "$ZENO_PROOF_WORK/target/release/simple-go-host" verify \
+          timeout --kill-after=10s 8m "$ZENO_PROOF_WORK/target/release/simple-go-host" verify \
             "$(cat research/zeno-batch-proof/batch.sha256)" "$ZENO_PROOF_WORK/proof.bin"
           printf 'BATCH_PROOF_SHA256 '
           sha256sum < "$ZENO_PROOF_WORK/proof.bin" | cut -d ' ' -f 1
