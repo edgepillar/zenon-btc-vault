@@ -45,8 +45,8 @@ summary. Each receipt must also match the fixture's ordered outcomes.
 The guest uses an in-memory adapter for the module and DA bundle. It
 accelerates SHA3-256 with the Ziren sponge syscall and checks that path
 against Go's SHA3-256 at padding boundaries during the smoke execution.
-The guest runtime handles private futex wake calls in the VM's
-single-worker environment. A wait that would block stops execution.
+The guest ELF retains the symbols used by Ziren's Go scheduler and
+public journal exit adapters.
 The native capture independently compares the resulting commitments using
 the unmodified executor and node sources.
 

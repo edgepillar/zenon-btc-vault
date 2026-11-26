@@ -14,7 +14,15 @@ fn main() {
     let overlay = zkm_build::generate_go_overlay_for(&output, &guest, &go_env)
         .expect("missing Ziren Go runtime overlay");
     let status = Command::new("go")
-        .args(["build", "-mod=mod", "-tags=ziren", "-trimpath", "-ldflags=-s -w"])
+        // Keep the symbol table for Ziren's Go runtime patches.
+        .args([
+            "build",
+            "-mod=mod",
+            "-tags=ziren",
+            "-trimpath",
+            "-buildvcs=false",
+            "-ldflags=-w -buildid=",
+        ])
         .arg("-overlay")
         .arg(overlay)
         .arg("-o")
