@@ -2,6 +2,8 @@
 
 from dataclasses import replace
 from decimal import Decimal
+from hashlib import sha3_256
+from struct import pack
 
 from mock_release import ReleaseRefused, Withdrawal
 from regtest import (
@@ -21,6 +23,7 @@ from regtest import (
     vault_address,
     vault_descriptor,
 )
+from withdrawal_authorization import AuthorizedRelease, WithdrawalSource, encode_authorization
 
 
 def sign_fee_child(rpc, release, destination, fee_sats):
@@ -97,16 +100,18 @@ def run_fee_controls(rpc):
         locktime=refund_height, payout_sats=VAULT_SATS - 1_500,
     )
 
+    source = WithdrawalSource(chain_id=0, domain_id=1, batch_id=0, contract_hash="11" * 32)
+    genesis = rpc.call("getblockhash", 0)
     first_claim, second_claim = (
         Withdrawal(
-            source_network="synthetic-zenon",
-            domain_id="test-vault",
-            outbox_id=outbox_id,
+            source_network=f"zenon:{source.chain_id}",
+            domain_id=str(source.domain_id),
+            outbox_id=sha3_256(pack(">IQQI", source.domain_id, source.batch_id, input_index, 0)).hexdigest(),
             amount_sats=VAULT_SATS,
             recipient_script_pubkey=recipient_script,
             **outpoint,
         )
-        for outpoint, outbox_id in ((refund_wins, "first-release"), (package_wins, "second-release"))
+        for input_index, outpoint in enumerate((refund_wins, package_wins))
     )
     tip = rpc.call("getbestblockhash")
     first_registration, second_registration = (
@@ -129,13 +134,25 @@ def run_fee_controls(rpc):
         raise RegtestError("Candidate block validation accepted an altered release signature")
     require(rpc.call("getbestblockhash") == tip, "Package registration changed the chain tip")
     require(not rpc.call("getrawmempool"), "Package registration changed the mempool")
+
+    # The fixture chooses both messages and the trusted root before accepting any proof.
+    first_message = encode_authorization(first_claim, source, genesis)
+    second_message = encode_authorization(second_claim, source, genesis)
+    first_leaf = sha3_256(b"\x00" + first_message).digest()
+    second_leaf = sha3_256(b"\x00" + second_message).digest()
+    root = sha3_256(b"\x01" + first_leaf + second_leaf).digest()
+    first_proof = b"\x00\x00\x00\x01\x01" + second_leaf
+    second_proof = b"\x00\x00\x00\x01\x00" + first_leaf
+    first_gate = AuthorizedRelease(first_registration, source, genesis, root)
+    second_gate = AuthorizedRelease(second_registration, source, genesis, root)
     try:
-        first_registration.release_signed_transaction(second_claim)
-    except ReleaseRefused:
-        pass
+        first_gate.release_signed_transaction(second_message, second_proof, observed_bitcoin_genesis=genesis)
+    except ReleaseRefused as exc:
+        if str(exc) != "Authenticated outbox message does not authorize the registered Bitcoin withdrawal":
+            raise
     else:
         raise RegtestError("The mock released a packaged spend for another vault's claim")
-    print("PASS: zero-fee parents register without broadcast and require the matching claim")
+    print("PASS: zero-fee parents register without broadcast and refuse another authorized vault's proof")
     print("PASS: unsubmitted block validation rejects a release with an altered payout")
 
     rpc.call("generatetoaddress", 1, miner)
@@ -148,7 +165,9 @@ def run_fee_controls(rpc):
     rpc.call("generatetoaddress", 1, miner)
     require(rpc.call("getblockcount") == refund_height, "Unexpected refund maturity height")
     require(mempool_result(rpc, first_refund)["allowed"], "The refund must be valid at maturity")
-    first_opened = first_registration.release_signed_transaction(first_claim)
+    first_opened = first_gate.release_signed_transaction(
+        first_message, first_proof, observed_bitcoin_genesis=rpc.call("getblockhash", 0),
+    )
     require(first_opened == first_release, "The mock must return the first registered parent")
     standalone = mempool_result(rpc, first_opened)
     require(
@@ -168,7 +187,9 @@ def run_fee_controls(rpc):
 
     refund_id = rpc.call("sendrawtransaction", second_refund)
     require(set(rpc.call("getrawmempool")) == {refund_id}, "Expected the second refund in the mempool")
-    second_opened = second_registration.release_signed_transaction(second_claim)
+    second_opened = second_gate.release_signed_transaction(
+        second_message, second_proof, observed_bitcoin_genesis=rpc.call("getblockhash", 0),
+    )
     require(second_opened == second_release, "The mock must return the second registered parent")
     second_child = sign_fee_child(rpc, second_opened, child_destination, 10_000)
     second_package = submit_release_package(rpc, second_opened, second_child, 10_000)
@@ -183,6 +204,7 @@ def run_fee_controls(rpc):
     )
     print("PASS: after maturity the release package displaced the refund for the same outpoint")
     print("PASS: the confirmed payout equals the registered gross amount minus the child fee")
+    print("PASS: the authenticated Bitcoin outbox messages open only their registered parents")
 
 
 if __name__ == "__main__":
