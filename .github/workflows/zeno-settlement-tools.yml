@@ -1,0 +1,126 @@
+name: Zeno Settlement verifier tools
+
+on:
+  push:
+    branches: [prove-settlement-on-devnet]
+    paths:
+      - .github/workflows/zeno-settlement-tools.yml
+      - research/zeno-settlement-proof/wrap.rs
+      - research/zeno-settlement-proof/settlement_groth16_devnet.go
+      - research/zeno-settlement-proof/verify-on-devnet.ts
+      - research/zeno-settlement-proof/prepare-node.py
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  wrapper:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    outputs:
+      guest-key: ${{ steps.wrapper.outputs.guest-key }}
+      sha256: ${{ steps.wrapper.outputs.sha256 }}
+    env:
+      CARGO_BUILD_JOBS: '3'
+      GIT_TERMINAL_PROMPT: '0'
+      GOTOOLCHAIN: local
+      GOWORK: 'off'
+      RUSTFLAGS: '-C target-cpu=x86-64-v3'
+      ZKM_IMM_WRAP_VK: 'false'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
+        with:
+          go-version: '1.25.4'
+          cache: false
+      - name: Build the wrapper and reproduce the PR 10 guest key
+        id: wrapper
+        shell: bash
+        run: |
+          umask 077
+          work_dir="$(mktemp -d "$RUNNER_TEMP/vault-wrapping.XXXXXX")"
+          df -PB1 "$work_dir" /mnt
+          awk '/^(MemTotal|SwapTotal):/ { print }' /proc/meminfo
+          disk_free="$(df -PB1 "$work_dir" | awk 'NR == 2 {print $4}')"
+          test "$disk_free" -ge "$((23 * 1024 * 1024 * 1024))"
+          printf 'WRAP_DIRECTORY=%s\n' "$work_dir" >> "$GITHUB_ENV"
+          if ! command -v protoc >/dev/null; then
+            timeout 180s sudo apt-get -q update
+            timeout 180s sudo apt-get -q install -y protobuf-compiler
+          fi
+          timeout 35m bash research/zeno-batch-proof/ziren/build.sh "$work_dir" \
+            "$PWD/research/zeno-settlement-proof/wrap.rs" | tee "$work_dir/build.log"
+          grep -Fxq 'BATCH_GUEST_ELF_SHA256 0b05f1069b7f05fb58cc273359436d9ce752d456266336b854f201c87b3a9bd8' "$work_dir/build.log"
+          binary="$work_dir/target/release/simple-go-host"
+          test "$(stat -c%s "$binary")" -le "$((256 * 1024 * 1024))"
+          timeout 45s "$binary" guest-key | tee "$work_dir/guest.log"
+          guest_key="$(awk '/^SETTLEMENT_GUEST_KEY / {print $2}' "$work_dir/guest.log")"
+          [[ "$guest_key" =~ ^0x[0-9a-f]{64}$ ]]
+          printf 'guest-key=%s\nsha256=%s\n' "$guest_key" "$(sha256sum < "$binary" | cut -d ' ' -f 1)" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: settlement-wrap-prover
+          path: ${{ env.WRAP_DIRECTORY }}/target/release/simple-go-host
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
+
+  devnet-build:
+    needs: wrapper
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    env:
+      ZENO_DEVNET_SHA: cf1c9c0e0f0ca3b257bdbd019c5589c2c27f748f
+      ZENO_NODE_SHA: 2835c436b197fece5c76adf4ba8dc1decca2e3ea
+      GUEST_KEY: ${{ needs.wrapper.outputs.guest-key }}
+      GOTOOLCHAIN: local
+      GOWORK: 'off'
+      GIT_TERMINAL_PROMPT: '0'
+      GIT_CONFIG_COUNT: '2'
+      GIT_CONFIG_KEY_0: url.https://github.com/.insteadOf
+      GIT_CONFIG_VALUE_0: 'ssh://git@github.com/'
+      GIT_CONFIG_KEY_1: url.https://github.com/.insteadOf
+      GIT_CONFIG_VALUE_1: 'git@github.com:'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
+        with:
+          go-version: '1.23.12'
+          cache: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24.17.0
+          package-manager-cache: false
+      - name: Check the isolated node and transaction client build
+        shell: bash
+        run: |
+          umask 077
+          work_dir="$(mktemp -d "$RUNNER_TEMP/settlement-devnet-build.XXXXXX")"
+          disk_free="$(df -PB1 "$work_dir" | awk 'NR == 2 {print $4}')"
+          test "$disk_free" -ge "$((18 * 1024 * 1024 * 1024))"
+          pinned_checkout() {
+            local dest="$1" url="$2" rev="$3"
+            git init -q "$dest"
+            timeout 120s git -C "$dest" fetch -q --depth 1 "$url" "$rev"
+            git -C "$dest" checkout --quiet --detach FETCH_HEAD
+            test "$(git -C "$dest" rev-parse HEAD)" = "$rev"
+          }
+          pinned_checkout "$work_dir/node" https://github.com/digitalSloth/go-zenon.git "$ZENO_NODE_SHA"
+          pinned_checkout "$work_dir/devnet" https://github.com/Zeno-L2/zeno-devnet.git "$ZENO_DEVNET_SHA"
+          python3 -B research/zeno-settlement-proof/prepare-node.py "$work_dir/node" "$GUEST_KEY"
+          cp research/zeno-settlement-proof/verify-on-devnet.ts "$work_dir/devnet/flows/"
+          (
+            cd "$work_dir/node"
+            go mod edit -require github.com/consensys/gnark@v0.10.1-0.20240504023521-d9bfacd7cb60 \
+              -require github.com/consensys/gnark-crypto@v0.14.0
+            timeout 8m go mod tidy
+            timeout 10m go test -tags devnet ./vm/embedded/implementation ./vm/embedded -run='^$'
+          )
+          cd "$work_dir/devnet"
+          timeout 8m npm ci --no-audit --no-fund
+          timeout 2m npm run typecheck

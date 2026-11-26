@@ -113,7 +113,7 @@ PY_SHARDS
 # serde_json already appears in this package's pinned dependency lock.
 sed -i '/^\[build-dependencies\]$/a serde_json = "1.0"' "$ziren/examples/simple-go/host/Cargo.toml"
 if [[ "$#" -eq 2 ]]; then
-  sed -i '/^zkm-sdk = { workspace = true }$/a zkm-prover = { workspace = true }' \
+  sed -i '/^zkm-sdk = { workspace = true }$/a zkm-prover = { workspace = true }\nbincode = "1.3.3"' \
     "$ziren/examples/simple-go/host/Cargo.toml"
   python3 -B - "$ziren/examples/Cargo.lock" <<'PY_LOCK'
 from pathlib import Path
@@ -125,10 +125,12 @@ prefix = 'name = "simple-go-host"\nversion = "1.1.0"\ndependencies = [\n'
 start = text.index(prefix)
 end = text.index("\n]", start)
 package = text[start:end]
-anchor = ' "zkm-sdk",'
-if package.count(anchor) != 1:
+prover_anchor = ' "zkm-sdk",'
+codec_anchor = ' "byteorder",'
+if package.count(prover_anchor) != 1 or package.count(codec_anchor) != 1:
     raise SystemExit("Pinned example dependency list differs")
-package = package.replace(anchor, ' "zkm-prover",\n' + anchor)
+package = package.replace(prover_anchor, ' "zkm-prover",\n' + prover_anchor)
+package = package.replace(codec_anchor, ' "bincode",\n' + codec_anchor)
 lock.write_text(text[:start] + package + text[end:], encoding="utf-8")
 PY_LOCK
 fi
