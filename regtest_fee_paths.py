@@ -2,8 +2,10 @@
 
 from decimal import Decimal
 
+from mock_release import ReleaseRefused, Withdrawal
 from regtest import (
     COIN,
+    RegtestError,
     VAULT_SATS,
     bitcoin_amount,
     fund_vault,
@@ -11,8 +13,10 @@ from regtest import (
     mempool_result,
     presign,
     public_key,
+    register_release,
     require,
     synthetic_wif,
+    vault_address,
     vault_descriptor,
 )
 
@@ -64,8 +68,11 @@ def run_fee_controls(rpc):
     release_wif, refund_wif = synthetic_wif(), synthetic_wif()
     release_pub, refund_pub = public_key(rpc, release_wif), public_key(rpc, refund_wif)
     descriptor = vault_descriptor(release_pub, refund_pub, refund_height)
-    refund_wins = fund_vault(rpc, descriptor)
-    package_wins = fund_vault(rpc, descriptor)
+    address = vault_address(rpc, descriptor)
+    vault_script = rpc.call("validateaddress", address)["scriptPubKey"]
+    recipient_script = rpc.call("validateaddress", recipient)["scriptPubKey"]
+    refund_wins = fund_vault(rpc, address)
+    package_wins = fund_vault(rpc, address)
     rpc.call("generatetoaddress", 1, miner)
 
     release_descriptor = vault_descriptor(release_wif, refund_pub, refund_height)
@@ -87,6 +94,33 @@ def run_fee_controls(rpc):
         locktime=refund_height, payout_sats=VAULT_SATS - 1_500,
     )
 
+    first_claim, second_claim = (
+        Withdrawal(
+            source_network="synthetic-zenon",
+            domain_id="test-vault",
+            outbox_id=outbox_id,
+            amount_sats=VAULT_SATS,
+            recipient_script_pubkey=recipient_script,
+            **outpoint,
+        )
+        for outpoint, outbox_id in ((refund_wins, "first-release"), (package_wins, "second-release"))
+    )
+    first_registration, second_registration = (
+        register_release(
+            rpc, claim, release, vault_script=vault_script,
+            fee_child=sign_fee_child(rpc, release, child_destination, 1_000),
+        )
+        for claim, release in ((first_claim, first_release), (second_claim, second_release))
+    )
+    require(not rpc.call("getrawmempool"), "Package registration must leave the mempool empty")
+    try:
+        first_registration.release_signed_transaction(second_claim)
+    except ReleaseRefused:
+        pass
+    else:
+        raise RegtestError("The mock released a packaged spend for another vault's claim")
+    print("PASS: zero-fee parents register without broadcast and require the matching claim")
+
     rpc.call("generatetoaddress", 1, miner)
     require(rpc.call("getblockcount") == refund_height - 1, "Unexpected pre-refund chain height")
     early_refund = mempool_result(rpc, first_refund)
@@ -97,14 +131,16 @@ def run_fee_controls(rpc):
     rpc.call("generatetoaddress", 1, miner)
     require(rpc.call("getblockcount") == refund_height, "Unexpected refund maturity height")
     require(mempool_result(rpc, first_refund)["allowed"], "The refund must be valid at maturity")
-    standalone = mempool_result(rpc, first_release)
+    first_opened = first_registration.release_signed_transaction(first_claim)
+    require(first_opened == first_release, "The mock must return the first registered parent")
+    standalone = mempool_result(rpc, first_opened)
     require(
         not standalone["allowed"] and standalone.get("reject-reason") == "min relay fee not met",
         "The zero-fee release must fail standalone admission",
     )
 
-    first_child = sign_fee_child(rpc, first_release, child_destination, 2_000)
-    first_package = submit_release_package(rpc, first_release, first_child, 2_000)
+    first_child = sign_fee_child(rpc, first_opened, child_destination, 2_000)
+    first_package = submit_release_package(rpc, first_opened, first_child, 2_000)
     require(set(rpc.call("getrawmempool")) == first_package, "Expected the release and fee child in the mempool")
     print("PASS: recipient CPFP admits the zero-fee release after standalone admission fails")
 
@@ -115,11 +151,22 @@ def run_fee_controls(rpc):
 
     refund_id = rpc.call("sendrawtransaction", second_refund)
     require(set(rpc.call("getrawmempool")) == {refund_id}, "Expected the second refund in the mempool")
-    second_child = sign_fee_child(rpc, second_release, child_destination, 10_000)
-    second_package = submit_release_package(rpc, second_release, second_child, 10_000)
+    second_opened = second_registration.release_signed_transaction(second_claim)
+    require(second_opened == second_release, "The mock must return the second registered parent")
+    second_child = sign_fee_child(rpc, second_opened, child_destination, 10_000)
+    second_package = submit_release_package(rpc, second_opened, second_child, 10_000)
     require(set(rpc.call("getrawmempool")) == second_package, "The package did not displace the refund")
     require_mined(rpc, miner, second_package, {refund_id})
+    mined_child = rpc.call("decoderawtransaction", second_child)
+    payout = rpc.call("gettxout", mined_child["txid"], 0, False)
+    child_script = rpc.call("validateaddress", child_destination)["scriptPubKey"]
+    require(
+        payout is not None and payout["scriptPubKey"]["hex"] == child_script
+        and payout["value"] * COIN == VAULT_SATS - 10_000,
+        "Unexpected confirmed payout after the child fee",
+    )
     print("PASS: after maturity the release package displaced the refund for the same outpoint")
+    print("PASS: the confirmed payout equals the registered gross amount minus the child fee")
 
 
 if __name__ == "__main__":
