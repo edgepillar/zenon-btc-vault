@@ -1,15 +1,6 @@
 use std::{env, fs, path::PathBuf, process::Command};
 
 
-// The batch guest uses in-memory state, modules and bundles. Its Linux
-// environment has no filesystem entries.
-fn refuse_file_path(source: &str, signature: &str, result: &str) -> String {
-    assert_eq!(source.matches(signature).count(), 1, "unexpected syscall source");
-    let (before, body) = source.split_once(signature).unwrap();
-    let (_, after) = body.split_once("\n}\n").expect("end of generated syscall");
-    format!("{before}{signature}\n\treturn {result}\n}}\n{after}")
-}
-
 fn main() {
     let guest = PathBuf::from(env::var_os("ZENO_GUEST_DIR").expect("missing guest directory"));
     let output = PathBuf::from(env::var_os("OUT_DIR").expect("missing output directory"));
@@ -31,20 +22,34 @@ fn main() {
         .expect("locate pinned Go toolchain");
     assert!(goroot.status.success(), "go env GOROOT failed");
     let goroot = String::from_utf8(goroot.stdout).expect("GOROOT must be UTF-8");
-    let syscall_source = PathBuf::from(goroot.trim()).join("src/syscall/zsyscall_linux_mipsle.go");
-    let syscall_overlay = output.join("zsyscall_linux_mipsle.go");
+    // Use the ordinary Linux errors for the guest's absent paths and TTYs.
+    // Other syscalls still go through Ziren's normal decoder and AIR.
+    let syscall_source =
+        PathBuf::from(goroot.trim()).join("src/internal/runtime/syscall/asm_linux_mipsx.s");
+    let syscall_overlay = output.join("asm_linux_mipsx.s");
     let syscall = fs::read_to_string(&syscall_source).expect("read Go syscall source");
-    let syscall = refuse_file_path(
-        &syscall,
-        "func openat(dirfd int, path string, flags int, mode uint32) (fd int, err error) {",
-        "-1, ENOENT",
-    );
-    let syscall = refuse_file_path(
-        &syscall,
-        "func readlinkat(dirfd int, path string, buf []byte) (n int, err error) {",
-        "0, ENOENT",
-    );
-    fs::write(&syscall_overlay, syscall).expect("write guest filesystem overlay");
+    let entry = "\tSYSCALL\n\tBEQ\tR7, ok\n";
+    assert_eq!(syscall.matches(entry).count(), 1, "unexpected MIPS syscall source");
+    let isolated = syscall.replace(entry, concat!(
+        "\tMOVW\t$4288, R1 // openat\n",
+        "\tBEQ\tR1, R2, pathMissing\n",
+        "\tMOVW\t$4298, R1 // readlinkat\n",
+        "\tBEQ\tR1, R2, pathMissing\n",
+        "\tMOVW\t$4054, R1 // ioctl\n",
+        "\tBEQ\tR1, R2, noTTY\n",
+        "\tSYSCALL\n",
+        "\tBEQ\tR7, ok\n",
+        "returnError:\n",
+    ));
+    fs::write(&syscall_overlay, isolated + concat!(
+        "pathMissing:\n",
+        "\tMOVW\t$2, R2 // ENOENT\n",
+        "\tJMP\treturnError\n",
+        "noTTY:\n",
+        "\tMOVW\t$25, R2 // ENOTTY\n",
+        "\tJMP\treturnError\n",
+    ))
+    .expect("write isolated Go syscall overlay");
     let mut replacements: serde_json::Value =
         serde_json::from_slice(&fs::read(&overlay).expect("read Ziren overlay"))
             .expect("parse Ziren overlay");
