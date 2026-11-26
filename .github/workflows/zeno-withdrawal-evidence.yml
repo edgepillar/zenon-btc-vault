@@ -52,6 +52,8 @@ jobs:
           timeout 120s git -C "$devnet" fetch --quiet --depth 1 https://github.com/Zeno-L2/zeno-devnet.git "$ZENO_DEVNET_SHA"
           git -C "$devnet" checkout --quiet --detach FETCH_HEAD
           test "$(git -C "$devnet" rev-parse HEAD)" = "$ZENO_DEVNET_SHA"
+          # The unprivileged gateway reads this public file through a Docker bind mount.
+          chmod 0644 "$devnet/config/gateway.json"
           cp research/zeno-withdrawal/capture.ts "$devnet/flows/vault-evidence.ts"
           cd "$devnet"
           timeout 8m npm ci --no-audit --no-fund
@@ -80,6 +82,20 @@ jobs:
           sha256sum < "$ZENO_EVIDENCE_FILE" | cut -d ' ' -f 1
           printf 'ZENO_EVIDENCE_JSON '
           cat "$ZENO_EVIDENCE_FILE"
+
+      - name: Report the isolated services on failure
+        if: failure()
+        shell: bash
+        run: |
+          docker ps -a --filter label=com.docker.compose.project=zeno-devnet --format '{{.Names}} {{.Status}}'
+          for service in gateway executor; do
+            container="$(docker ps -aq --filter label=com.docker.compose.project=zeno-devnet --filter "label=com.docker.compose.service=$service")"
+            if [ -n "$container" ]; then
+              docker logs --tail 20 "$container" 2>&1 |
+                sed -E 's#https?://[^[:space:]]+#[endpoint]#g' |
+                awk 'length($0) <= 500 && tolower($0) !~ /(secret|key|seed|mnemonic|authorization)/'
+            fi
+          done
 
       - name: Stop the isolated devnet
         if: always()
