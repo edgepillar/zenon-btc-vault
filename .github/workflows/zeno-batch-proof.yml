@@ -12,20 +12,17 @@ permissions:
   contents: read
 
 jobs:
-  proof:
+  build:
     runs-on: ubuntu-24.04
-    timeout-minutes: 125
+    timeout-minutes: 45
+    outputs:
+      prover_sha256: ${{ steps.prover.outputs.sha256 }}
     env:
       GIT_TERMINAL_PROMPT: '0'
       GOTOOLCHAIN: local
       GOWORK: 'off'
       CARGO_BUILD_JOBS: '3'
-      RUSTFLAGS: '-C target-cpu=native'
-      RAYON_NUM_THREADS: '4'
-      ELEMENT_THRESHOLD: '55000000'
-      TRACE_GEN_WORKERS: '1'
-      CHECKPOINTS_CHANNEL_CAPACITY: '2'
-      RECORDS_AND_TRACES_CHANNEL_CAPACITY: '1'
+      RUSTFLAGS: '-C target-cpu=x86-64-v3'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -78,30 +75,88 @@ jobs:
           awk '$1 == "BATCH_GUEST_ERROR_PC" { print $2 }' "$ZENO_PROOF_WORK/execution.log" \
             | go tool addr2line "$elf"
 
-      - name: Prove all recorded batch inputs
+      - name: Select the checked prover binary
+        id: prover
         if: hashFiles('research/zeno-batch-proof/batch.json') != ''
+        shell: bash
+        run: |
+          host="$ZENO_PROOF_WORK/target/release/simple-go-host"
+          test "$(stat --format=%s "$host")" -le "$((128 * 1024 * 1024))"
+          printf 'sha256=%s\n' "$(sha256sum < "$host" | cut -d ' ' -f 1)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        if: steps.prover.outcome == 'success'
+        with:
+          name: checked-zeno-batch-prover
+          path: ${{ env.ZENO_PROOF_WORK }}/target/release/simple-go-host
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+
+  proof:
+    needs: build
+    if: needs.build.outputs.prover_sha256 != ''
+    runs-on: ubuntu-24.04
+    timeout-minutes: 115
+    env:
+      RAYON_NUM_THREADS: '4'
+      ELEMENT_THRESHOLD: '55000000'
+      TRACE_GEN_WORKERS: '1'
+      CHECKPOINTS_CHANNEL_CAPACITY: '2'
+      RECORDS_AND_TRACES_CHANNEL_CAPACITY: '1'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Check proof runner capacity
+        shell: bash
+        run: |
+          umask 077
+          work_dir="$(mktemp -d "$RUNNER_TEMP/vault-proof.XXXXXX")"
+          free_bytes="$(df -PB1 "$work_dir" | awk 'NR == 2 {print $4}')"
+          test "$free_bytes" -ge "$((11 * 1024 * 1024 * 1024))"
+          printf 'ZENO_PROOF_WORK=%s\n' "$work_dir" >> "$GITHUB_ENV"
+
+      - uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
+        with:
+          name: checked-zeno-batch-prover
+          path: ${{ env.ZENO_PROOF_WORK }}
+
+      - name: Verify the prover and witness digests
+        shell: bash
+        env:
+          PROVER_SHA256: ${{ needs.build.outputs.prover_sha256 }}
+        run: |
+          [[ "$PROVER_SHA256" =~ ^[0-9a-f]{64}$ ]]
+          printf '%s  %s\n' "$PROVER_SHA256" "$ZENO_PROOF_WORK/simple-go-host" | sha256sum --check --strict
+          chmod 0500 "$ZENO_PROOF_WORK/simple-go-host"
+          cd research/zeno-batch-proof
+          digest="$(cat batch.sha256)"
+          [[ "$digest" =~ ^[0-9a-f]{64}$ ]]
+          printf '%s  %s\n' "$digest" batch.json | sha256sum --check --strict
+
+      - name: Prove all recorded batch inputs
         shell: bash
         env:
           RUST_LOG: zkm_core_machine::utils::prove=info,zkm_prover=info
         run: |
           cd research/zeno-batch-proof
           digest="$(cat batch.sha256)"
-          ulimit -f 262144
+          ulimit -f 524288
           /usr/bin/time -f 'BATCH_PROVER_ELAPSED_SECONDS %e MAX_RSS_KIB %M EXIT %x' \
-            timeout --kill-after=20s 100m "$ZENO_PROOF_WORK/target/release/simple-go-host" prove \
+            timeout --kill-after=20s 100m "$ZENO_PROOF_WORK/simple-go-host" prove \
             batch.json "$digest" "$ZENO_PROOF_WORK/proof.bin"
 
       - name: Verify the serialized proof in a separate process
-        if: hashFiles('research/zeno-batch-proof/batch.json') != ''
         shell: bash
         run: |
-          timeout --kill-after=10s 8m "$ZENO_PROOF_WORK/target/release/simple-go-host" verify \
+          timeout --kill-after=10s 8m "$ZENO_PROOF_WORK/simple-go-host" verify \
             "$(cat research/zeno-batch-proof/batch.sha256)" "$ZENO_PROOF_WORK/proof.bin"
           printf 'BATCH_PROOF_SHA256 '
           sha256sum < "$ZENO_PROOF_WORK/proof.bin" | cut -d ' ' -f 1
 
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
-        if: hashFiles('research/zeno-batch-proof/batch.json') != ''
         with:
           name: zeno-devnet-batch-proof
           path: ${{ env.ZENO_PROOF_WORK }}/proof.bin

@@ -7,7 +7,7 @@ use zkm_sdk::{
 
 const ELF: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/vault-guest"));
 const WITNESS_LIMIT: u64 = 49_152;
-const PROOF_LIMIT: u64 = 268_435_456;
+const PROOF_LIMIT: u64 = 536_870_912;
 const MAX_CYCLES: u64 = 300_000_000;
 
 fn read_witness(path: &str) -> Vec<u8> {
