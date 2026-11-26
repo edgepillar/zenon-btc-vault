@@ -101,8 +101,10 @@ async function verify(snapshot: Snapshot, checkpoint: Checkpoint, claim: Claim, 
   const message = Buffer.from(outbox.message, "hex")
   const proof = Buffer.from(outbox.proof, "hex")
   const item = settlement.decodeOutboxWithdrawal(message)
+  const committedOutboxRoot = String(entry.outboxRoot)
+  assert.match(committedOutboxRoot, /^0x[0-9a-fA-F]{64}$/, "expected a 32-byte ABI hash")
   assert.equal(
-    settlement.outboxProofRoot(message, proof).toString(), entry.outboxRoot.toString(),
+    settlement.outboxProofRoot(message, proof).toString(), committedOutboxRoot.slice(2).toLowerCase(),
     "outbox root must match the authenticated batch",
   )
   assert.equal(

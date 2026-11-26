@@ -8,4 +8,10 @@ The selected checkpoints rely on the pinned devnet run and its controlled local 
 
 The hosted setup waits for the producer and RPC node to pass the devnet's scheduled transport switch before running Settlement configuration. If progress stalls, it can restart the isolated bootstrap containers once using their existing state. The withdrawal flow starts only after configuration and gateway readiness succeed.
 
-After capture and offline replay succeed, the workflow reports the verified JSON and its SHA-256. A completed capture from a failed run is labeled unverified. From the pinned devnet checkout with its locked dependencies installed, place `capture.ts` in `flows/vault-evidence.ts` and run the offline replay against captured JSON with `npm exec --offline -- tsx flows/vault-evidence.ts --verify evidence.json`. Authenticate the recorded checkpoints against the selected run and pin the JSON digest before using it as a fixture.
+## Recorded capture
+
+The [capture run](https://github.com/edgepillar/zenon-btc-vault/actions/runs/45744737254) on `d96626f9af7d28b5ce5e1b1df3156e65a4846498` completed the devnet withdrawal. Its initial SDK replay failed when two identical roots used different hex representations. The retained [capture](evidence.json) has SHA-256 `81c5739a3632cea328626b5ddde0732f2324d444800c2b532f8583770538bb21`. An independent check recomputed both state roots and the outbox root directly from these bytes before the SDK comparison was corrected.
+
+The capture records domain 1, batch 5, and a withdrawal of 0.4 synthetic ZNN. The batch's proved finalization height is 112. The state proof at Momentum 111 contains the batch before that deadline. The finalized witness uses Momentum 115. The checkpoints share the same state root because the Settlement deadline is compared against the checkpoint height.
+
+The default hosted check replays the committed capture and verifies its digest. A manual run with **Capture fresh** starts a new devnet and reports its proof separately. To replay from the pinned devnet checkout with its locked dependencies installed, place `capture.ts` in `flows/vault-evidence.ts` and run `npm exec --offline -- tsx flows/vault-evidence.ts --verify evidence.json`. Authenticate the recorded checkpoints against the selected run and pin the JSON digest before using it as a fixture.

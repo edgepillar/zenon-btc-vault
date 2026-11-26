@@ -7,6 +7,13 @@ on:
       - .github/workflows/zeno-withdrawal-evidence.yml
       - research/zeno-withdrawal/capture.ts
       - research/zeno-withdrawal/bootstrap.py
+      - research/zeno-withdrawal/evidence.json
+  workflow_dispatch:
+    inputs:
+      capture_fresh:
+        description: Start an isolated devnet and capture a fresh withdrawal
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -29,7 +36,22 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Select the evidence source
+        shell: bash
+        env:
+          CAPTURE_FRESH: ${{ inputs.capture_fresh }}
+        run: |
+          if [ "$CAPTURE_FRESH" = "true" ]; then
+            echo 'ZENO_MODE=capture' >> "$GITHUB_ENV"
+          else
+            evidence="$GITHUB_WORKSPACE/research/zeno-withdrawal/evidence.json"
+            printf '%s  %s\n' '81c5739a3632cea328626b5ddde0732f2324d444800c2b532f8583770538bb21' "$evidence" |
+              sha256sum --check --strict
+            printf 'ZENO_MODE=replay\nZENO_EVIDENCE_FILE=%s\n' "$evidence" >> "$GITHUB_ENV"
+          fi
+
       - name: Check the disposable runner capacity
+        if: env.ZENO_MODE == 'capture'
         shell: bash
         run: |
           free_bytes="$(df -PB1 "$RUNNER_TEMP" | awk 'NR == 2 {print $4}')"
@@ -59,9 +81,13 @@ jobs:
           cd "$devnet"
           timeout 8m npm ci --no-audit --no-fund
           timeout 2m npm run typecheck
-          printf 'ZENO_DEVNET_DIR=%s\nZENO_EVIDENCE_FILE=%s\n' "$devnet" "$work_dir/evidence.json" >> "$GITHUB_ENV"
+          printf 'ZENO_DEVNET_DIR=%s\n' "$devnet" >> "$GITHUB_ENV"
+          if [ "$ZENO_MODE" = "capture" ]; then
+            printf 'ZENO_EVIDENCE_FILE=%s\n' "$work_dir/evidence.json" >> "$GITHUB_ENV"
+          fi
 
       - name: Start the pinned devnet and check the transport switch
+        if: env.ZENO_MODE == 'capture'
         shell: bash
         run: |
           cd "$ZENO_DEVNET_DIR"
@@ -69,12 +95,14 @@ jobs:
           timeout 10m python3 -B "$GITHUB_WORKSPACE/research/zeno-withdrawal/bootstrap.py"
 
       - name: Configure Settlement and wait for the gateway
+        if: env.ZENO_MODE == 'capture'
         shell: bash
         run: |
           cd "$ZENO_DEVNET_DIR"
           timeout 18m bash scripts/devnet.sh config
 
       - name: Capture the devnet withdrawal
+        if: env.ZENO_MODE == 'capture'
         shell: bash
         run: |
           cd "$ZENO_DEVNET_DIR"
@@ -88,11 +116,13 @@ jobs:
           test "$(stat --format=%s "$ZENO_EVIDENCE_FILE")" -le 32768
           printf 'ZENO_EVIDENCE_SHA256 '
           sha256sum < "$ZENO_EVIDENCE_FILE" | cut -d ' ' -f 1
-          printf 'ZENO_EVIDENCE_JSON '
-          cat "$ZENO_EVIDENCE_FILE"
+          if [ "$ZENO_MODE" = "capture" ]; then
+            printf 'ZENO_EVIDENCE_JSON '
+            cat "$ZENO_EVIDENCE_FILE"
+          fi
 
       - name: Report the isolated services on failure
-        if: failure()
+        if: failure() && env.ZENO_MODE == 'capture'
         shell: bash
         run: |
           if [ -n "${ZENO_EVIDENCE_FILE:-}" ] && [ -f "$ZENO_EVIDENCE_FILE" ] &&
@@ -113,7 +143,7 @@ jobs:
           done
 
       - name: Stop the isolated devnet
-        if: always()
+        if: always() && env.ZENO_MODE == 'capture'
         shell: bash
         run: |
           if [ -n "${ZENO_DEVNET_DIR:-}" ]; then
