@@ -2,6 +2,7 @@
 package main
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/json"
 	"errors"
@@ -42,6 +43,7 @@ type authorizationEvidence struct {
 	Selection struct {
 		ContractID types.Hash `json:"contractId"`
 		BatchID    uint64     `json:"batchId"`
+		BitcoinTarget string  `json:"bitcoinTarget"`
 		Checkpoint struct {
 			ChainID uint64     `json:"chainIdentifier"`
 			Version uint64     `json:"version"`
@@ -52,6 +54,9 @@ type authorizationEvidence struct {
 	} `json:"selection"`
 	Storage struct {
 		Root types.Hash `json:"postStateRoot"`
+		Result struct {
+			Value types.Hash `json:"value"`
+		} `json:"result"`
 	} `json:"storage"`
 	Sends struct {
 		Unauthorized types.Hash `json:"unauthorized"`
@@ -230,7 +235,42 @@ func expectedCalls(auth authorizationEvidence) []callExpectation {
 	}
 }
 
-func verifyExecution(scratch string, auth authorizationEvidence, proved []definition.BatchEntry, inputs []ledger.Input) error {
+type authorizationStatement struct {
+	AuthorizationSHA256 string     `json:"authorizationSha256"`
+	ExecutionSHA256     string     `json:"executionSha256"`
+	Caller              string     `json:"caller"`
+	CanonicalInput      string     `json:"canonicalInput"`
+	BitcoinTarget       string     `json:"bitcoinTarget"`
+	Commitment          types.Hash `json:"commitment"`
+	StateDiffHash       types.Hash `json:"stateDiffHash"`
+}
+
+func verifyAuthorizationPreconditions(record codec.BundleInputRecord, contract types.Hash) error {
+	result, err := codec.DecodeExecutionResult(record.ExecutionResult)
+	if err != nil {
+		return err
+	}
+	slot := trie.Path(types.NewHash(append(contract.Bytes(), byte(0x01))))
+	quota := trie.Path(types.NewHash(append(contract.Bytes(), 0x00, 0x05)))
+	quotaBefore := [16]byte{7: 96}
+	var slotAbsent, quotaAvailable bool
+	for _, witness := range record.Witnesses {
+		switch witness.DerivedKey {
+		case slot:
+			ok, err := trie.VerifyAbsenceByPath(result.PreStateRoot, slot, witness.Proof)
+			slotAbsent = err == nil && ok && witness.Value == nil
+		case quota:
+			ok, err := trie.VerifyProofByPath(result.PreStateRoot, quota, quotaBefore[:], witness.Proof)
+			quotaAvailable = err == nil && ok && bytes.Equal(witness.Value, quotaBefore[:])
+		}
+	}
+	if !slotAbsent || !quotaAvailable {
+		return errors.New("authorization pre-state lacks an absent slot and an unused 96-byte quota")
+	}
+	return nil
+}
+
+func verifyExecution(scratch string, auth authorizationEvidence, proved []definition.BatchEntry, inputs []ledger.Input, statement *authorizationStatement) error {
 	if len(inputs) == 0 || len(inputs) > maxInputs {
 		return errors.New("invalid devnet input count")
 	}
@@ -290,6 +330,22 @@ func verifyExecution(scratch string, auth authorizationEvidence, proved []defini
 					return fmt.Errorf("replayed %s receipt differs from the selected authorization flow", w.label)
 				}
 				found[w.hash] = uint64(id)
+				if statement != nil && w.hash == auth.Sends.Authorize {
+					if err := verifyAuthorizationPreconditions(records[i], r.ContractID); err != nil {
+						return err
+					}
+					first := stream.next - len(records)
+					if first < 0 {
+						return errors.New("replayed statements exceed the consumed input stream")
+					}
+					source := inputs[first+i]
+					if source.Ctx.GlobalInputIndex != r.InputIndex {
+						return errors.New("authorization input does not match its replayed index")
+					}
+					statement.Caller = fmt.Sprintf("%x", source.Ctx.L1Sender.Bytes())
+					statement.CanonicalInput = fmt.Sprintf("%x", records[i].InputData)
+					statement.StateDiffHash = r.StateDiffHash
+				}
 			}
 		}
 	}
@@ -331,7 +387,7 @@ func checkRefusals(scratch string, auth authorizationEvidence, data executionCap
 	}
 	changed := append([]ledger.Input(nil), data.Inputs...)
 	changed[authorizeIndex].Ctx.L1Sender = changed[unauthorizedIndex].Ctx.L1Sender
-	if err := verifyExecution(scratch, auth, entries, changed); !errors.Is(err, errCommitmentMismatch) {
+	if err := verifyExecution(scratch, auth, entries, changed, nil); !errors.Is(err, errCommitmentMismatch) {
 		return fmt.Errorf("caller substitution did not cause a commitment mismatch: %v", err)
 	}
 	fmt.Println("PASS: refused a modified Settlement proof value and a substituted authorization sender")
@@ -355,9 +411,9 @@ func writeCapture(name string, data executionCapture) error {
 }
 
 func run(args []string) error {
-	const usage = "use capture <authorization> <execution-output> <scratch> or replay <authorization> <execution-capture> <scratch> <sha256>"
+	const usage = "use capture <authorization> <execution-output> <scratch> or replay/statement <authorization> <execution-capture> <scratch> <sha256>"
 	if len(args) < 4 || (args[0] == "capture" && len(args) != 4) ||
-		(args[0] == "replay" && len(args) != 5) || (args[0] != "capture" && args[0] != "replay") {
+		(args[0] != "capture" && (len(args) != 5 || (args[0] != "replay" && args[0] != "statement"))) {
 		return errors.New(usage)
 	}
 	auth, sha, err := loadAuthorization(args[1])
@@ -392,10 +448,30 @@ func run(args []string) error {
 	if err != nil {
 		return err
 	}
-	if err := verifyExecution(args[3], auth, entries, data.Inputs); err != nil {
+	var statement *authorizationStatement
+	if args[0] == "statement" {
+		statement = &authorizationStatement{
+			AuthorizationSHA256: sha, ExecutionSHA256: strings.TrimSpace(args[4]),
+			BitcoinTarget: auth.Selection.BitcoinTarget, Commitment: auth.Storage.Result.Value,
+		}
+	}
+	if err := verifyExecution(args[3], auth, entries, data.Inputs, statement); err != nil {
 		return err
 	}
-	return checkRefusals(args[3], auth, data, entries)
+	if err := checkRefusals(args[3], auth, data, entries); err != nil {
+		return err
+	}
+	if statement != nil {
+		if statement.Caller == "" || statement.StateDiffHash.IsZero() || statement.BitcoinTarget == "" || statement.Commitment.IsZero() {
+			return errors.New("missing authorization statement fields")
+		}
+		raw, err := json.Marshal(statement)
+		if err != nil {
+			return err
+		}
+		fmt.Printf("AUTHORIZATION_STATEMENT_JSON %s\n", raw)
+	}
+	return nil
 }
 
 func main() {
