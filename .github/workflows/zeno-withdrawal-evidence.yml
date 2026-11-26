@@ -13,7 +13,7 @@ permissions:
 jobs:
   devnet:
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: 65
     env:
       ZENO_DEVNET_SHA: cf1c9c0e0f0ca3b257bdbd019c5589c2c27f748f
       DEVNET_BIND_ADDRESS: 127.0.0.1
@@ -42,7 +42,7 @@ jobs:
           node-version: 24.17.0
           package-manager-cache: false
 
-      - name: Bring up the pinned devnet and check the withdrawal evidence
+      - name: Prepare the pinned devnet and type-check the capture flow
         shell: bash
         run: |
           umask 077
@@ -56,22 +56,36 @@ jobs:
           cd "$devnet"
           timeout 8m npm ci --no-audit --no-fund
           timeout 2m npm run typecheck
-          cleanup() {
-            local status=$?
-            trap - EXIT
-            if ! timeout 120s bash scripts/devnet.sh down; then
-              echo "Devnet teardown failed on the disposable runner" >&2
-              if [ "$status" -eq 0 ]; then status=1; fi
-            fi
-            exit "$status"
-          }
-          trap cleanup EXIT
-          timeout 12m bash scripts/devnet.sh up
-          export ZENO_EVIDENCE_FILE="$work_dir/evidence.json"
-          timeout 20m npm exec --offline -- tsx flows/vault-evidence.ts
+          printf 'ZENO_DEVNET_DIR=%s\nZENO_EVIDENCE_FILE=%s\n' "$devnet" "$work_dir/evidence.json" >> "$GITHUB_ENV"
+
+      - name: Start and configure the pinned devnet
+        shell: bash
+        run: |
+          cd "$ZENO_DEVNET_DIR"
+          timeout 22m bash scripts/devnet.sh up
+
+      - name: Capture the devnet withdrawal
+        shell: bash
+        run: |
+          cd "$ZENO_DEVNET_DIR"
+          timeout 25m npm exec --offline -- tsx flows/vault-evidence.ts
+
+      - name: Replay the captured proof and report the evidence digest
+        shell: bash
+        run: |
+          cd "$ZENO_DEVNET_DIR"
           timeout 60s npm exec --offline -- tsx flows/vault-evidence.ts --verify "$ZENO_EVIDENCE_FILE"
           test "$(stat --format=%s "$ZENO_EVIDENCE_FILE")" -le 32768
           printf 'ZENO_EVIDENCE_SHA256 '
           sha256sum < "$ZENO_EVIDENCE_FILE" | cut -d ' ' -f 1
           printf 'ZENO_EVIDENCE_JSON '
           cat "$ZENO_EVIDENCE_FILE"
+
+      - name: Stop the isolated devnet
+        if: always()
+        shell: bash
+        run: |
+          if [ -n "${ZENO_DEVNET_DIR:-}" ]; then
+            cd "$ZENO_DEVNET_DIR"
+            timeout 120s bash scripts/devnet.sh down
+          fi
