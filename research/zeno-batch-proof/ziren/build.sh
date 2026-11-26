@@ -24,7 +24,7 @@ guest="$executor/cmd/vault-batch-guest"
 mkdir "$guest"
 cp "$source_dir/guest.go" "$source_dir/batch-witness.go" "$guest/"
 cp "$source_dir/ziren/hash-ziren.go" "$zenon/common/crypto/"
-python3 -B - "$zenon/common/crypto/hash.go" <<'PY'
+python3 -B - "$zenon/common/crypto/hash.go" "$zenon/common/errors.go" "$zenon/rpc/server/errors.go" <<'PY'
 from pathlib import Path
 from sys import argv
 
@@ -42,6 +42,24 @@ if text.count(original) != 1:
 path.write_text(text.replace(original, """func Hash(data ...[]byte) []byte {
 \treturn zirenSHA3(data...)
 }"""), encoding="utf-8")
+
+# The error interface only needs its two methods. Avoid starting the RPC
+# subscription ID generator in the guest, which has no entropy source.
+server = Path(argv[3]).read_text(encoding="utf-8")
+server_interface = (
+    "type Error interface {\n"
+    "\tError() string  // returns the message\n"
+    "\tErrorCode() int // returns the code\n}"
+)
+if server.count(server_interface) != 1:
+    raise SystemExit("Pinned RPC error interface differs")
+path = Path(argv[2])
+text = path.read_text(encoding="utf-8")
+import_line = '\t"github.com/zenon-network/go-zenon/rpc/server"\n'
+embedded_error = "\tserver.Error\n"
+if text.count(import_line) != 1 or text.count(embedded_error) != 1:
+    raise SystemExit("Pinned common error type differs")
+path.write_text(text.replace(import_line, "").replace(embedded_error, "\terror\n\tErrorCode() int\n"), encoding="utf-8")
 PY
 
 runtime="github.com/ProjectZKM/Ziren/crates/go-runtime/zkvm_runtime"
@@ -50,6 +68,9 @@ runtime="github.com/ProjectZKM/Ziren/crates/go-runtime/zkvm_runtime"
   go mod edit -go=1.25.4 \
     -require "$runtime@v0.0.0-20240817102429-2faba0888c02" \
     -replace "$runtime=../../ziren/crates/go-runtime/zkvm_runtime"
+  GOOS=linux GOARCH=mipsle GOMIPS=softfloat CGO_ENABLED=0 \
+    go list -mod=mod -tags=ziren -deps ./cmd/vault-batch-guest \
+    | awk '$0 == "github.com/zenon-network/go-zenon/rpc/server" { linked = 1 } END { exit linked }'
 )
 # A program counter is enough to locate a failed guest instruction.
 python3 -B - "$ziren/crates/prover/src/lib.rs" <<'PY_PROVER'

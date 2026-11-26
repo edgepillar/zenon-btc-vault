@@ -48,7 +48,8 @@ against Go's SHA3-256 at padding boundaries during the smoke execution.
 The guest ELF retains the symbols used by Ziren's Go scheduler and
 public journal exit adapters.
 The guest supplies the standard Linux errors for absent file paths and terminal devices.
-Its in-memory execution uses no network poller.
+The guest preserves the node error interface's method set without linking
+the RPC server or starting its subscription ID generator.
 The native capture independently compares the resulting commitments using
 the unmodified executor and node sources.
 
