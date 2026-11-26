@@ -51,6 +51,23 @@ runtime="github.com/ProjectZKM/Ziren/crates/go-runtime/zkvm_runtime"
     -require "$runtime@v0.0.0-20240817102429-2faba0888c02" \
     -replace "$runtime=../../ziren/crates/go-runtime/zkvm_runtime"
 )
+# A program counter is enough to locate a failed guest instruction.
+python3 -B - "$ziren/crates/prover/src/lib.rs" <<'PY_PROVER'
+from pathlib import Path
+from sys import argv
+
+source = Path(argv[1])
+text = source.read_text(encoding="utf-8")
+run = "        runtime.run_fast()?;\n        Ok((ZKMPublicValues::from"
+if text.count(run) != 1:
+    raise SystemExit("Pinned Ziren execution entry point differs")
+source.write_text(text.replace(run, """        if let Err(error) = runtime.run_fast() {
+            eprintln!("BATCH_GUEST_ERROR_PC {:x}", runtime.state.pc);
+            return Err(error);
+        }
+        Ok((ZKMPublicValues::from"""), encoding="utf-8")
+PY_PROVER
+
 # serde_json already appears in this package's pinned dependency lock.
 sed -i '/^\[build-dependencies\]$/a serde_json = "1.0"' "$ziren/examples/simple-go/host/Cargo.toml"
 cp "$source_dir/ziren/build.rs" "$ziren/examples/simple-go/host/build.rs"

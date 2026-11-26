@@ -49,7 +49,9 @@ jobs:
       - name: Check guest execution and SHA3-256 parity
         id: smoke
         shell: bash
-        run: timeout --kill-after=10s 300s "$ZENO_PROOF_WORK/target/release/simple-go-host" smoke
+        run: |
+          timeout --kill-after=10s 300s "$ZENO_PROOF_WORK/target/release/simple-go-host" smoke \
+            2>&1 | tee "$ZENO_PROOF_WORK/execution.log"
 
       - name: Execute the full batch and its negative controls
         id: execute
@@ -60,37 +62,17 @@ jobs:
           digest="$(cat batch.sha256)"
           [[ "$digest" =~ ^[0-9a-f]{64}$ ]]
           printf '%s  %s\n' "$digest" batch.json | sha256sum --check --strict
-          timeout --kill-after=10s 5m "$ZENO_PROOF_WORK/target/release/simple-go-host" execute batch.json "$digest"
+          timeout --kill-after=10s 5m "$ZENO_PROOF_WORK/target/release/simple-go-host" execute batch.json "$digest" \
+            2>&1 | tee "$ZENO_PROOF_WORK/execution.log"
 
       - name: Identify the instruction at a guest execution failure
         if: failure() && (steps.smoke.outcome == 'failure' || steps.execute.outcome == 'failure')
         shell: bash
-        env:
-          SMOKE_OUTCOME: ${{ steps.smoke.outcome }}
         run: |
-          cd research/zeno-batch-proof
-          host="$ZENO_PROOF_WORK/target/release/simple-go-host"
-          trace="$ZENO_PROOF_WORK/guest.pc"
-          export TRACE_FILE="$trace" ZIREN_DISABLE_JIT=1
-          ulimit -f 65536
-          if [ "$SMOKE_OUTCOME" = failure ]; then
-            timeout --kill-after=5s 30s "$host" smoke || :
-          else
-            timeout --kill-after=5s 30s "$host" execute batch.json "$(cat batch.sha256)" || :
-          fi
-          test -s "$trace"
+          test -s "$ZENO_PROOF_WORK/execution.log"
           elf="$(find "$ZENO_PROOF_WORK/target/release/build" -type f -name vault-guest)"
-          python3 -B - "$trace" <<'PY' | go tool addr2line "$elf"
-          import os
-          import struct
-          import sys
-
-          with open(sys.argv[1], "rb") as trace:
-              size = os.fstat(trace.fileno()).st_size & ~3
-              trace.seek(max(0, size - 64))
-              for (pc,) in struct.iter_unpack(">I", trace.read(size - trace.tell())):
-                  print(f"{pc:x}")
-          PY
+          awk '$1 == "BATCH_GUEST_ERROR_PC" { print $2 }' "$ZENO_PROOF_WORK/execution.log" \
+            | go tool addr2line "$elf"
 
       - name: Prove all recorded batch inputs
         if: hashFiles('research/zeno-batch-proof/batch.json') != ''
