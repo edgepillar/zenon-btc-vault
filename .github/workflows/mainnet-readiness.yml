@@ -1,0 +1,58 @@
+name: Zenon mainnet proof readiness
+
+on:
+  push:
+    branches: [observe-mainnet-proof-readiness]
+  workflow_dispatch:
+    inputs:
+      observe_fresh:
+        description: Collect a fresh read-only sample from the two public Zenon RPCs
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  observation:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      SPV_SHA: f058474d5f35cfa08cdccbf153d6fb9fbf9ab649
+      GOWORK: 'off'
+      GOTOOLCHAIN: go1.26.0
+      GIT_TERMINAL_PROMPT: '0'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Build and test the probe against the pinned SPV source
+        shell: bash
+        run: |
+          umask 077
+          scratch="$(mktemp -d "$RUNNER_TEMP/vault-mainnet.XXXXXX")"
+          spv="$scratch/spv"
+          git init --quiet "$spv"
+          timeout 120s git -C "$spv" fetch --quiet --depth 1 https://github.com/edgepillar/zenon-spv.git "$SPV_SHA"
+          git -C "$spv" checkout --quiet --detach FETCH_HEAD
+          test "$(git -C "$spv" rev-parse HEAD)" = "$SPV_SHA"
+          mkdir "$spv/tools/vault-mainnet-observation"
+          cp research/mainnet-readiness/*.go "$spv/tools/vault-mainnet-observation/"
+          cd "$spv"
+          go version
+          timeout 3m go test -mod=readonly -count=1 -v ./tools/vault-mainnet-observation
+          timeout 90s go build -mod=readonly -trimpath -o "$scratch/observe" ./tools/vault-mainnet-observation
+          printf 'VAULT_OBSERVER=%s\n' "$scratch/observe" >> "$GITHUB_ENV"
+
+      - name: Observe public mainnet RPCs or replay the selected capture
+        shell: bash
+        env:
+          OBSERVE_FRESH: ${{ inputs.observe_fresh }}
+        run: |
+          evidence=research/mainnet-readiness
+          if [ "$OBSERVE_FRESH" = true ] || [ ! -f "$evidence/evidence.sha256" ]; then
+            timeout 75s "$VAULT_OBSERVER" capture
+          else
+            timeout 30s "$VAULT_OBSERVER" replay "$evidence/evidence.json" "$(cat "$evidence/evidence.sha256")"
+          fi
