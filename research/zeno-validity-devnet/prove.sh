@@ -20,7 +20,12 @@ use_prover() {
 }
 
 reserve_spill() {
+  test ! -e "$work/prover-swap"
+  test ! -L "$work/prover-swap"
   enable_prover_swap "$work" "$1"
+  if [[ "${RELEASE_PROVER_SPILL:-}" = 1 && -n "${SETTLEMENT_SWAP:-}" ]]; then
+    trap 'sudo swapoff "$SETTLEMENT_SWAP"; sudo rm -- "$SETTLEMENT_SWAP"' EXIT
+  fi
   test "$(awk '/^(MemTotal|SwapTotal):/ {sum += $2} END {print sum}' /proc/meminfo)" -ge "$(( $1 * 1024 * 1024 ))"
 }
 

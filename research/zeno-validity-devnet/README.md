@@ -122,3 +122,23 @@ bound to run `46052640002`, attempt 1.
 The protocol profile retains the Phase 1 setup batches and withdrawal delay.
 The result is scoped to the three-call authorizer profile and the devnet
 overlay. [Phase 2 outline](https://github.com/Zeno-L2/zeno-docs/blob/d74ba1fc4b01583af0daf33a2dedfc84ea2b9419/phase-2/SPEC.md)
+
+## Validity-backed Bitcoin regtest release
+
+The [release workflow](../../.github/workflows/zeno-validity-regtest-release.yml)
+combines the validity proof with the existing fixed-output regtest registration.
+Bitcoin Core first funds the vault and validates a signed transaction with a
+single 999,000-satoshi payout. The authorization call commits to that
+registration's Bitcoin genesis, funding outpoint, recipient script and amount.
+The witness builder exports an absence proof for the prior authorization slot
+and post-state proofs for the module hash, immutable policy and target slot.
+An independent verifier checks those paths before the proof run.
+
+After the proof stages, the restored devnet accepts the same commitment through
+Settlement. The runner checks the batch entry at its eligible Momentum and
+binds the contract proofs to the accepted post-state root. Bitcoin Core reopens
+the original regtest tip, checks the registered transaction again and confirms
+the exact bytes. A successful run records the state roots, both chain receipts
+and the SHA-256 of the original signed transaction. The regtest data and signed
+transaction stay on the runner. The experiment uses a runner-held registration
+and the devnet's configured withdrawal delay.
