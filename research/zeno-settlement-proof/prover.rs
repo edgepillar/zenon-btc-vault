@@ -8,6 +8,7 @@ use zkm_sdk::{
 const ELF: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/vault-guest"));
 const CORE_SIZE: u64 = 150_029_239;
 const CORE_SHARDS: usize = 171;
+const LIVE_CORE_LIMIT: u64 = 512 * 1024 * 1024;
 const COMPRESSED_LIMIT: u64 = 16 * 1024 * 1024;
 
 fn load(
@@ -23,17 +24,22 @@ fn load(
     proof
 }
 
-fn compress(client: &ProverClient, source: &str, output: &str, digest: &[u8]) {
+fn compress(client: &ProverClient, source: &str, output: &str, digest: &[u8], expected: Option<(u64, usize)>) {
     assert!(!Path::new(output).exists(), "proof output already exists");
-    let bundle = load(source, digest, CORE_SIZE..=CORE_SIZE);
+    let sizes = expected.map_or(1..=LIVE_CORE_LIMIT, |(size, _)| size..=size);
+    let bundle = load(source, digest, sizes);
     let (_, vk) = client.setup(ELF);
     client.verify(&bundle, &vk).expect("verify the retained core proof");
     let ZKMProof::Core(shards) = bundle.proof else {
         panic!("expected a core proof");
     };
-    assert_eq!(shards.len(), CORE_SHARDS, "core shard count differs");
+    if let Some((_, count)) = expected {
+        assert_eq!(shards.len(), count, "core shard count differs");
+    }
+    assert!(!shards.is_empty(), "expected a full Core proof");
     println!(
-        "SETTLEMENT_CORE_VERIFIED {CORE_SHARDS} {} {}",
+        "SETTLEMENT_CORE_VERIFIED {} {} {}",
+        shards.len(),
         hex::encode(digest),
         vk.bytes32()
     );
@@ -91,16 +97,17 @@ fn main() {
         prover: Box::new(CpuProver::from_prover(ZKMProver::uninitialized_with(Some(true)))),
     };
     match args.as_slice() {
-        [mode, digest, source, output] if mode == "compress" => {
+        [mode, digest, source, output] if mode == "compress" || mode == "compress-live" => {
             let digest = hex::decode(digest).expect("witness SHA-256");
             assert_eq!(digest.len(), 32, "invalid witness digest length");
-            compress(&client, source, output, &digest);
+            let expected = (mode == "compress").then_some((CORE_SIZE, CORE_SHARDS));
+            compress(&client, source, output, &digest, expected);
         }
         [mode, digest, file] if mode == "verify-compressed" => {
             let digest = hex::decode(digest).expect("witness SHA-256");
             assert_eq!(digest.len(), 32, "invalid witness digest length");
             verify_compressed(&client, file, &digest);
         }
-        _ => panic!("usage: compress SHA256 CORE COMPRESSED | verify-compressed SHA256 COMPRESSED"),
+        _ => panic!("usage: compress|compress-live JOURNAL CORE COMPRESSED | verify-compressed JOURNAL COMPRESSED"),
     }
 }
