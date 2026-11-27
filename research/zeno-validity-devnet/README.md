@@ -134,6 +134,10 @@ The witness builder exports an absence proof for the prior authorization slot
 and post-state proofs for the module hash, immutable policy and target slot.
 An independent verifier checks those paths before the proof run.
 
+The capture and release job keeps the two local chains on its runner. Dedicated
+jobs generate and verify the proofs on fresh runners. They take the qualified
+proposal from the current run and pass verified proof files by digest.
+
 After the proof stages, the restored devnet accepts the same commitment through
 Settlement. The runner checks the batch entry at its eligible Momentum and
 binds the contract proofs to the accepted post-state root. Bitcoin Core reopens
