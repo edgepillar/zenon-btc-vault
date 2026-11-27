@@ -59,6 +59,37 @@ advance the cursor or write a batch. The hosted workflow verifies the serialized
 Ziren Core proof and checks the altered-journal case separately.
 [PR 10 batch](https://github.com/edgepillar/zenon-btc-vault/pull/10) · [PR 11 proof](https://github.com/edgepillar/zenon-btc-vault/pull/11)
 
+## Executed controls
+
+Run `45983864343`, attempt 1, used source revision
+`97175d393548b23d1afbbc5e127159b7d943f362`. Native replay, the Python encoder
+and the Ziren guest agreed on the 32-byte journal
+`5162e7804a4a92a8fe7060e857519eee50ad31ec9577a6509b5693e1e6bf7f56`.
+The ending input link is
+`87cb7dee3e612e6a1afaae3372a9f71a2c41eb054b5787621c17bde99a197fe0`.
+The MIPS guest ran 64,981,566 instructions and rejected four modified witnesses.
+The controls omit an input, reorder two inputs, replace a caller and omit a
+pre-state leaf. [Guest qualification](https://github.com/edgepillar/zenon-btc-vault/actions/runs/45983864343/job/140454345462)
+
+| Item | Value |
+| --- | --- |
+| Proposal witness SHA-256 | `74f92f8bcf464db358df19ac8fc390cb36c646477ab8f0c264eb0572b44fb695` |
+| Guest ELF SHA-256 | `787074c160393704ec2d5cf9be784df0625e370b351e655a303f99bb890d0880` |
+| Ziren guest key | `0x00e4e8f52c5c085d833abcfacbbf0270e9832cd2af090ae12f7659c08270ffa4` |
+
+The node tests derived the same journal from the test ledger. A changed
+confirmation timestamp changed the journal and a missing source confirmation
+prevented journal construction. Missing and historical proofs left the cursor,
+batch entry and chain anchor intact. All 16 selected native controls passed.
+[Node qualification](https://github.com/edgepillar/zenon-btc-vault/actions/runs/45983864343/job/140458564673)
+
+The first Core runner lost communication with GitHub during proving. The retry
+pins the completed witness and prover artifacts by run, source revision and
+archive digest. It reserves swap on the disposable runner and leaves the
+compiled guest and public journal identical. [First Core attempt](https://github.com/edgepillar/zenon-btc-vault/actions/runs/45983864343/job/140458911997)
+
+## Devnet acceptance scope
+
 The proof-bearing submission gate requires a Groth16 wrapper of the new guest's
 proof. A fresh live devnet qualification starts from pending admitted calls and
 checks the resulting batch entry and cursor after the signed submission.
