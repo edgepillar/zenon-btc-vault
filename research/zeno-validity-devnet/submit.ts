@@ -212,19 +212,22 @@ async function main(mode: string, work: string) {
   assert.match(fixture.proof, /^[0-9a-f]{512}$/)
   const proof = Buffer.from(fixture.proof, "hex")
   const data = SubmitBatchContract.encodeCall("SubmitBatch", [withProof(commitment, proof)])
-  assert.ok(data.length < 16_384)
-  const sent = await sendAndWait(executor, AccountBlockTemplate.callContract(SETTLEMENT_ADDRESS, ZNN_ZTS, 0n, data))
+  const transaction = AccountBlockTemplate.callContract(SETTLEMENT_ADDRESS, ZNN_ZTS, 0n, data)
+  assert.ok(transaction.data.length < 16_384)
+  const sent = await sendAndWait(executor, transaction)
   assert.ok(sent.accepted, "the proof-bearing SubmitBatch failed")
   await waitHeight(sent.receiveHeight + CONFIRMATION_DEPTH)
   const included = await ledger.getAccountBlockByHash(sent.hash)
   const receive = included?.pairedAccountBlock
   assert.ok(included && receive?.hash && receive.data.length === 8)
+  assert.equal(included.address.toString(), pending.submitter)
+  assert.deepEqual(Buffer.from(included.data), Buffer.from(transaction.data))
   const receiveCode = Number(Buffer.from(receive.data).readBigUInt64BE())
   assert.equal(receiveCode, 1)
   const observed = await observe(ledger, sent.receiveHeight, true, commitment, statement.chainEnd)
   const accepted = {
     send: sent.hash.toString(), receive: receive.hash.toString(), receiveCode,
-    dataBytes: data.length, basePlasma: included.basePlasma, usedPlasma: included.usedPlasma, ...observed,
+    dataBytes: transaction.data.length, basePlasma: included.basePlasma, usedPlasma: included.usedPlasma, ...observed,
   }
   const result = JSON.stringify({
     schema: 1, chainId: CHAIN_ID, domain: DOMAIN_ID, batch: Number(BATCH), genesis: pending.genesis,

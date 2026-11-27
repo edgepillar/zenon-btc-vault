@@ -106,7 +106,7 @@ jobs:
           repository: ${{ github.repository }}
           run-id: ${{ env.PROOF_RUN }}
 
-      - name: Verify the devnet SubmitBatch receive and the new Settlement state
+      - name: Verify the signed SubmitBatch payload and the resulting Settlement state
         shell: bash
         run: |
           work="$VALIDITY_WORK"

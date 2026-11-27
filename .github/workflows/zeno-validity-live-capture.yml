@@ -4,12 +4,11 @@ on:
   push:
     branches: [prove-validity-on-devnet]
     paths:
-      - .github/workflows/zeno-validity-live-capture.yml
       - research/zeno-validity-devnet/run-devnet.sh
       - research/zeno-validity-devnet/witness.go
       - research/zeno-validity-devnet/checkpoint.py
-      - research/zeno-validity-devnet/submit.ts
       - research/zeno-contract-authorization/capture.ts
+  workflow_dispatch:
 
 permissions:
   contents: read
