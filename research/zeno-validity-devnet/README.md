@@ -87,6 +87,38 @@ match all seven proposed commitment hashes. The cursor must advance to batch
 5 with seven consumed inputs. The stored anchor must contain the new cursor
 and the ending input link calculated before proving.
 
+The acceptance run used source revision `d7fa4ab2bbf765f24c28baf20625a60eddd87e1b`.
+It confirmed the valid proof-bearing send at Momentum 122 with receive code `1`.
+The confirmed send payload matched the signed payload byte for byte. It carried
+644 bytes and used 64,792 Plasma under the prototype's tariff.
+[Acceptance job](https://github.com/edgepillar/zenon-btc-vault/actions/runs/46052640002/job/140687469636)
+
+| Checkpoint | Batch 4 | Next batch ID | Consumed inputs | Input-chain anchor |
+| --- | --- | ---: | ---: | --- |
+| 99, before proving | Absent | 4 | 4 | Absent |
+| 120, after restoring | Absent | 4 | 4 | Absent |
+| 122, after acceptance | Present | 5 | 7 | Ending link stored |
+
+| Accepted transaction | Value |
+| --- | --- |
+| Send hash | `0dd1bb08d255f3fc5725dfec507a0ca749bac3df0b8935b56e13c066b1edcfce` |
+| Receive hash | `072704a20271978322dc3789fa6a3e6bd1928aa1048dd67085ad8a7e22631d46` |
+| Momentum hash | `c42579ddf276aa71c0212d2fc1dc5fbb08f54864e7b91d57a5d04293cb2aa871` |
+| Momentum state root | `4a0de4b164f3e8a3947df16b0fd3e0a710004464b7bf68f968338a81b4ab0ab2` |
+
+An independent SHA3-256 reconstruction checked all 13 state proofs, the three
+assigned send hashes, the full accepted commitment, cursor, ending anchor and
+Groth16 public inputs. The earlier acceptance run reported the hexadecimal
+encoding length. The final run reused the same checkpoint and proof and
+measured the confirmed payload bytes directly.
+[Earlier acceptance](https://github.com/edgepillar/zenon-btc-vault/actions/runs/46052023492/job/140685423675)
+
+The exact [acceptance record](acceptance.json) and [Groth16 fixture](groth16-fixture.json)
+are retained with their [acceptance checksum](acceptance.sha256) and
+[fixture checksum](groth16-fixture.sha256). The archived acceptance artifact is
+bound to run `46052640002`, attempt 1.
+[Acceptance artifact](https://github.com/edgepillar/zenon-btc-vault/actions/runs/46052640002/artifacts/15224783871)
+
 The protocol profile retains the Phase 1 setup batches and withdrawal delay.
 The result is scoped to the three-call authorizer profile and the devnet
 overlay. [Phase 2 outline](https://github.com/Zeno-L2/zeno-docs/blob/d74ba1fc4b01583af0daf33a2dedfc84ea2b9419/phase-2/SPEC.md)

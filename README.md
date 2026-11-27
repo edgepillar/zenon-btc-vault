@@ -26,6 +26,8 @@ The [Zeno Settlement experiment](research/zeno-settlement-proof/README.md) wraps
 
 The [proposed batch validity experiment](research/zeno-validity-statement/README.md) binds a recomputed batch to the L1 inputs admitted by Settlement and derives the proof journal before `SubmitBatch` can write an entry.
 
+The [live proof-bearing SubmitBatch experiment](research/zeno-validity-devnet/README.md) proves three newly admitted calls and verifies the accepted batch, successor cursor and input-chain anchor on the restored devnet.
+
 The execution replay fixture adds a second check before release. It rebuilds the devnet batches from their L1 inputs and compares the computed commitments with the proven Settlement entries. [Execution replay evidence](research/zeno-execution-replay/README.md)
 
 The Groth16 experiment proves the selected authorization call and its two state writes against a public statement derived from the recorded replay. [Authorization proof experiment](research/authorization-proof/README.md)
