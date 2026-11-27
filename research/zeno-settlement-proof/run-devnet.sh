@@ -43,7 +43,8 @@ stop_owned_nodes() {
   exit "$status"
 }
 trap stop_owned_nodes EXIT
-timeout 12m "${compose[@]}" up -d --build pillar pillar2 pillar3 observer rpc
+timeout 12m "${compose[@]}" build pillar
+timeout 3m "${compose[@]}" up -d --no-build --pull never pillar pillar2 pillar3 observer rpc
 timeout 10m python3 -B "$root/research/zeno-withdrawal/bootstrap.py"
 (
   cd "$devnet"
