@@ -66,17 +66,25 @@ func readRecordedVerifier() *groth16.VerifyingKey {
 }
 
 func readRecordedInputs() fr.Vector {
-	digest := sha256.Sum256(recordedJournal[:])
+	inputs, err := zirenPublicInputs(decodeRecordedValue(recordedGuestKey), recordedJournal)
+	if err != nil {
+		panic(err)
+	}
+	return inputs
+}
+
+func zirenPublicInputs(guestKey [32]byte, journal types.Hash) (fr.Vector, error) {
+	digest := sha256.Sum256(journal[:])
 	// Ziren maps the committed-value digest to 253 bits in BN254.
 	digest[0] &= 0x1f
-	words := [3][32]byte{decodeRecordedValue(recordedGuestKey), digest, decodeRecordedValue(recordedCircuitRoot)}
+	words := [3][32]byte{guestKey, digest, decodeRecordedValue(recordedCircuitRoot)}
 	inputs := make(fr.Vector, len(words))
 	for i := range words {
 		if err := inputs[i].SetBytesCanonical(words[i][:]); err != nil {
-			panic("invalid Ziren BN254 public input")
+			return nil, errors.New("invalid Ziren BN254 public input")
 		}
 	}
-	return inputs
+	return inputs, nil
 }
 
 type SettlementVerifyRecordedBatchMethod struct{ MethodName string }
@@ -135,26 +143,33 @@ func (p *SettlementVerifyRecordedBatchMethod) ReceiveBlock(context vm_context.Ac
 	if hasReceipt {
 		return nil, errors.New("recorded batch proof already verified")
 	}
-	points := curve.NewDecoder(bytes.NewReader(params.Proof))
-	var proof groth16.Proof
-	if err := points.Decode(&proof.Ar); err != nil {
-		return nil, errors.New("invalid recorded Groth16 A point")
-	}
-	if err := points.Decode(&proof.Bs); err != nil {
-		return nil, errors.New("invalid recorded Groth16 B point")
-	}
-	if err := points.Decode(&proof.Krs); err != nil {
-		return nil, errors.New("invalid recorded Groth16 C point")
-	}
-	if points.BytesRead() != recordedProofBytes || proof.Ar.IsInfinity() || proof.Bs.IsInfinity() || proof.Krs.IsInfinity() {
-		return nil, errors.New("invalid recorded Groth16 point encoding")
-	}
-	if err := groth16.Verify(&proof, recordedVerifier, recordedInputs); err != nil {
-		return nil, errors.New("recorded Groth16 verification failed")
+	if err := verifyZirenProof(params.Proof, recordedInputs); err != nil {
+		return nil, err
 	}
 	proofDigest := sha256.Sum256(params.Proof)
 	value := make([]byte, 0, len(recordedJournal)+len(proofDigest))
 	value = append(value, recordedJournal[:]...)
 	value = append(value, proofDigest[:]...)
 	return nil, storage.Put(key, value)
+}
+
+func verifyZirenProof(raw []byte, inputs fr.Vector) error {
+	if len(raw) != recordedProofBytes {
+		return errors.New("invalid Groth16 proof size")
+	}
+	points := curve.NewDecoder(bytes.NewReader(raw))
+	var proof groth16.Proof
+	if err := points.Decode(&proof.Ar); err != nil {
+		return errors.New("invalid Groth16 A point")
+	}
+	if err := points.Decode(&proof.Bs); err != nil {
+		return errors.New("invalid Groth16 B point")
+	}
+	if err := points.Decode(&proof.Krs); err != nil {
+		return errors.New("invalid Groth16 C point")
+	}
+	if points.BytesRead() != recordedProofBytes || proof.Ar.IsInfinity() || proof.Bs.IsInfinity() || proof.Krs.IsInfinity() {
+		return errors.New("invalid Groth16 point encoding")
+	}
+	return groth16.Verify(&proof, recordedVerifier, inputs)
 }

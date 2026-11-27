@@ -1,7 +1,7 @@
 use serde_json::Value;
 use std::{env, fs, io::Read, path::Path};
 use zkm_sdk::{
-    provers::ProofOpts, CpuProver, ProverClient, ZKMContextBuilder, ZKMProof, ZKMProofKind,
+    provers::ProofOpts, CpuProver, HashableKey, ProverClient, ZKMContextBuilder, ZKMProof, ZKMProofKind,
     ZKMProofWithPublicValues, ZKMProver, ZKMPublicValues, ZKMStdin,
 };
 
@@ -107,6 +107,10 @@ fn main() {
         prover: Box::new(CpuProver::from_prover(ZKMProver::uninitialized())),
     };
     match args.as_slice() {
+        [mode] if mode == "guest-key" => {
+            let (_, key) = client.setup(ELF);
+            println!("BATCH_GUEST_KEY {}", key.bytes32());
+        }
         [mode] if mode == "smoke" => {
             let digest = hex::decode(
                 "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
@@ -148,6 +152,6 @@ fn main() {
             assert_eq!(digest.len(), 32, "expected a SHA-256 digest");
             verify(&client, file, &digest);
         }
-        _ => panic!("usage: smoke | execute WITNESS SHA256 | prove WITNESS SHA256 PROOF | verify SHA256 PROOF"),
+        _ => panic!("usage: guest-key | smoke | execute WITNESS JOURNAL | prove WITNESS JOURNAL PROOF | verify JOURNAL PROOF"),
     }
 }
