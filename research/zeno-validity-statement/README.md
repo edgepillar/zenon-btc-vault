@@ -88,6 +88,18 @@ pins the completed witness and prover artifacts by run, source revision and
 archive digest. It reserves swap on the disposable runner and leaves the
 compiled guest and public journal identical. [First Core attempt](https://github.com/edgepillar/zenon-btc-vault/actions/runs/45983864343/job/140458911997)
 
+The retry at controller revision `6c3a47cb9dd2157f0a6ce39e83a0d9fd53404683`
+recorded 167 shard openings and produced a 146,349,466-byte Ziren v2.0.0 Core
+proof in 4,368.86 seconds. A separate process reopened the proof, verified the
+same journal with the pinned guest key and rejected a changed journal.
+[Core proof run](https://github.com/edgepillar/zenon-btc-vault/actions/runs/45996257713/job/140496288493)
+
+| Retained Core proof | Value |
+| --- | --- |
+| Raw proof SHA-256 | `32e98e615d6d7179f9daf0e7fa421a26f72ad96548d601b97435d76b6c7584c0` |
+| Artifact ZIP SHA-256 | `6aeed1f5d8546928d4fdefaa9c48d629526abe36c0e4f15e128d0a9b1de18ceb` |
+| Artifact | [15200588430](https://github.com/edgepillar/zenon-btc-vault/actions/runs/45996257713/artifacts/15200588430) |
+
 ## Devnet acceptance scope
 
 The proof-bearing submission gate requires a Groth16 wrapper of the new guest's
