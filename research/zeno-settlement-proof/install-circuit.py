@@ -12,6 +12,7 @@ from urllib.request import Request, urlopen
 URL = "https://zkm-toolchain.s3.us-west-2.amazonaws.com/v2.0.0-groth16.tar.gz"
 ETAG = '"28b1550007090ddb26232c7224854666-1391"'
 ARCHIVE_BYTES = 11_660_948_984
+ARCHIVE_SHA256 = "d8fe235382c59306fc663182b07ae736abcf8c2bcec19a54af565dbe6f032d29"
 MAX_UNPACKED = 26 * 1024**3
 MAX_MEMBER_COUNT = 64
 VK_BYTES = 428
@@ -76,10 +77,13 @@ def extract(response, destination):
                 raise ValueError("Unexpected trailing circuit archive content")
     if stream.remaining or seen != FILES:
         raise ValueError("Incomplete circuit archive")
+    archive_sha = stream.digest.hexdigest()
+    if archive_sha != ARCHIVE_SHA256:
+        raise ValueError("Circuit archive SHA-256 differs")
     vk = (destination / "groth16_vk.bin").read_bytes()
     if hashlib.sha256(vk).hexdigest() != VK_HASH:
         raise ValueError("Circuit key differs from the source-pinned Ziren verifier")
-    print(f"SETTLEMENT_CIRCUIT_ARCHIVE_SHA256 {stream.digest.hexdigest()}", flush=True)
+    print(f"SETTLEMENT_CIRCUIT_ARCHIVE_SHA256 {archive_sha}", flush=True)
 
 
 if __name__ == "__main__":

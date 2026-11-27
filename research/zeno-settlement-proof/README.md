@@ -23,6 +23,11 @@ bind the rebuilt guest key, the 253-bit digest of the journal and the release's
 recursion key root. The workflow verifies the wrapper using the verifying key
 published with the pinned Ziren source.
 
+The [first Settlement workflow](https://github.com/edgepillar/zenon-btc-vault/actions/runs/45911549775)
+verified the BN254 outer proof in 899.92 seconds. The workflow consumes that
+saved output by digest. Its Groth16 runner configures the published proving key's
+on-demand FFT mode and records the memory available during proof generation.
+
 The devnet node adds `VerifyRecordedBatch` to the embedded Settlement contract.
 The method uses the historical journal configured in the node and accepts a
 256-byte proof with three BN254 points. It verifies the proof before writing a
