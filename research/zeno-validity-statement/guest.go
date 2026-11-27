@@ -23,7 +23,7 @@ func main() {
 		zkvm_runtime.RuntimeExit(1)
 		return
 	}
-	// The Solidity wrapper hashes raw public bytes. Commit the digest bytes
-	// directly so the node can derive the same public input independently.
-	zkvm_runtime.Commit(journal[:])
+	// Ziren writes a fixed byte array as-is. A slice adds a length prefix
+	// that would change the public input used by the node.
+	zkvm_runtime.Commit(journal)
 }
