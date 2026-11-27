@@ -1,0 +1,222 @@
+name: Zeno proposed batch statement
+
+on:
+  push:
+    branches: [prove-proposed-zeno-batch]
+    paths:
+      - .github/workflows/zeno-validity-statement.yml
+      - research/zeno-validity-statement/*.go
+      - research/zeno-validity-statement/statement/*.go
+      - research/zeno-validity-statement/node/*.go
+      - research/zeno-validity-statement/check-statement.py
+      - research/zeno-batch-proof/ziren/build.sh
+      - research/zeno-batch-proof/ziren/host.rs
+      - research/zeno-settlement-proof/prepare-node.py
+      - research/zeno-settlement-proof/settlement_groth16_devnet.go
+
+permissions:
+  contents: read
+
+jobs:
+  statement:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 48
+    outputs:
+      journal: ${{ steps.execute.outputs.journal }}
+      chain_end: ${{ steps.execute.outputs.chain_end }}
+      guest_key: ${{ steps.execute.outputs.guest_key }}
+      witness_sha256: ${{ steps.execute.outputs.witness_sha256 }}
+      prover_sha256: ${{ steps.execute.outputs.prover_sha256 }}
+    env:
+      GIT_TERMINAL_PROMPT: '0'
+      GOTOOLCHAIN: local
+      GOWORK: 'off'
+      CARGO_BUILD_JOBS: '3'
+      RUSTFLAGS: '-C target-cpu=x86-64-v3'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
+        with:
+          go-version: '1.25.4'
+          cache: false
+
+      - name: Build the native proposal witness tool and the pinned Ziren guest
+        shell: bash
+        run: |
+          umask 077
+          work="$(mktemp -d "$RUNNER_TEMP/zeno-validity.XXXXXX")"
+          free_bytes="$(df -PB1 "$work" | awk 'NR == 2 {print $4}')"
+          test "$free_bytes" -ge "$((23 * 1024 * 1024 * 1024))"
+          printf 'VALIDITY_WORK=%s\n' "$work" >> "$GITHUB_ENV"
+          if ! command -v protoc >/dev/null; then
+            timeout 180s sudo apt-get -q update
+            timeout 180s sudo apt-get -q install -y protobuf-compiler
+          fi
+          timeout 35m bash research/zeno-batch-proof/ziren/build.sh "$work" '' \
+            "$GITHUB_WORKSPACE/research/zeno-validity-statement"
+
+      - name: Cross-check the new journal and execute the proposal guest
+        id: execute
+        shell: bash
+        run: |
+          archive=research/zeno-batch-proof
+          work="$VALIDITY_WORK"
+          for stem in batch execution; do
+            digest="$(cat "$archive/$stem.sha256")"
+            [[ "$digest" =~ ^[0-9a-f]{64}$ ]]
+            printf '%s  %s\n' "$digest" "$archive/$stem.json" | sha256sum --check --strict
+          done
+          timeout 120s "$work/proposal-witness" "$archive/batch.json" "$archive/execution.json" \
+            "$work/proposal.json" | tee "$work/native.log"
+          python3 -B research/zeno-validity-statement/check-statement.py "$work/proposal.json" "$work/native.log"
+          journal="$(awk '$1 == "PROPOSAL_JOURNAL" {print $2}' "$work/native.log")"
+          chain_end="$(awk '$1 == "PROPOSAL_CHAIN_END" {print $2}' "$work/native.log")"
+          [[ "$journal" =~ ^[0-9a-f]{64}$ && "$chain_end" =~ ^[0-9a-f]{64}$ ]]
+          prover="$work/target/release/simple-go-host"
+          timeout --kill-after=10s 6m "$prover" execute "$work/proposal.json" "$journal"
+          guest_key="$(timeout 90s "$prover" guest-key | awk '$1 == "BATCH_GUEST_KEY" {print $2}')"
+          [[ "$guest_key" =~ ^0x[0-9a-f]{64}$ ]]
+          test "$(stat --format=%s "$prover")" -le "$((128 * 1024 * 1024))"
+          witness_sha="$(sha256sum < "$work/proposal.json" | cut -d ' ' -f 1)"
+          prover_sha="$(sha256sum < "$prover" | cut -d ' ' -f 1)"
+          printf 'PROPOSAL_GUEST_KEY %s\nPROPOSAL_WITNESS_SHA256 %s\n' "$guest_key" "$witness_sha"
+          printf 'journal=%s\nchain_end=%s\nguest_key=%s\nwitness_sha256=%s\nprover_sha256=%s\n' \
+            "$journal" "$chain_end" "$guest_key" "$witness_sha" "$prover_sha" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: zeno-proposed-batch-witness
+          path: ${{ env.VALIDITY_WORK }}/proposal.json
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 30
+
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: checked-zeno-proposal-prover
+          path: ${{ env.VALIDITY_WORK }}/target/release/simple-go-host
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 2
+
+  settlement:
+    needs: statement
+    runs-on: ubuntu-24.04
+    timeout-minutes: 24
+    env:
+      GOTOOLCHAIN: local
+      GOWORK: 'off'
+      GIT_TERMINAL_PROMPT: '0'
+      GIT_CONFIG_COUNT: '2'
+      GIT_CONFIG_KEY_0: url.https://github.com/.insteadOf
+      GIT_CONFIG_VALUE_0: 'ssh://git@github.com/'
+      GIT_CONFIG_KEY_1: url.https://github.com/.insteadOf
+      GIT_CONFIG_VALUE_1: 'git@github.com:'
+      PROPOSED_GUEST_KEY: ${{ needs.statement.outputs.guest_key }}
+      VAULT_PROPOSAL_JOURNAL: ${{ needs.statement.outputs.journal }}
+      VAULT_PROPOSAL_CHAIN_END: ${{ needs.statement.outputs.chain_end }}
+      WITNESS_SHA256: ${{ needs.statement.outputs.witness_sha256 }}
+      NODE_SHA: 2835c436b197fece5c76adf4ba8dc1decca2e3ea
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
+        with:
+          go-version: '1.23.12'
+          cache: false
+
+      - name: Prepare the devnet-only Settlement gate at the pinned node revision
+        shell: bash
+        run: |
+          umask 077
+          work="$(mktemp -d "$RUNNER_TEMP/zeno-validity-node.XXXXXX")"
+          test "$(df -PB1 "$work" | awk 'NR == 2 {print $4}')" -ge "$((13 * 1024 * 1024 * 1024))"
+          printf 'VALIDITY_WORK=%s\n' "$work" >> "$GITHUB_ENV"
+          node="$work/node"
+          git init --quiet "$node"
+          timeout 120s git -C "$node" fetch --quiet --depth 1 https://github.com/digitalSloth/go-zenon.git "$NODE_SHA"
+          git -C "$node" checkout --quiet --detach FETCH_HEAD
+          test "$(git -C "$node" rev-parse HEAD)" = "$NODE_SHA"
+          recorded="$GITHUB_WORKSPACE/research/zeno-settlement-proof/groth16-fixture.json"
+          printf '%s  %s\n' "$(cat "${recorded%.json}.sha256")" "$recorded" | sha256sum --check --strict
+          printf 'VAULT_RECORDED_GROTH16=%s\n' "$recorded" >> "$GITHUB_ENV"
+          recorded_key="$(jq -er '.guestKey' "$recorded")"
+          python3 -B research/zeno-settlement-proof/prepare-node.py "$node" "$recorded_key" "$PROPOSED_GUEST_KEY"
+
+      - uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
+        with:
+          name: zeno-proposed-batch-witness
+          path: ${{ env.VALIDITY_WORK }}
+
+      - name: Verify the statement from accepted input records before SubmitBatch
+        shell: bash
+        run: |
+          export VAULT_PROPOSAL_WITNESS="$VALIDITY_WORK/proposal.json"
+          printf '%s  %s\n' "$WITNESS_SHA256" "$VAULT_PROPOSAL_WITNESS" | sha256sum --check --strict
+          cd "$VALIDITY_WORK/node"
+          timeout 14m go test -mod=mod -tags devnet -count=1 -v \
+            -run '^(TestVaultValidity.*|TestAcceptBatch_.*|TestSubmitBatchValidateSendBlock)$' \
+            ./vm/embedded ./vm/embedded/implementation
+
+  proof:
+    needs: [statement, settlement]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 115
+    env:
+      RAYON_NUM_THREADS: '4'
+      ELEMENT_THRESHOLD: '55000000'
+      TRACE_GEN_WORKERS: '1'
+      CHECKPOINTS_CHANNEL_CAPACITY: '2'
+      RECORDS_AND_TRACES_CHANNEL_CAPACITY: '1'
+      PROPOSAL_JOURNAL: ${{ needs.statement.outputs.journal }}
+      WITNESS_SHA256: ${{ needs.statement.outputs.witness_sha256 }}
+      PROVER_SHA256: ${{ needs.statement.outputs.prover_sha256 }}
+    steps:
+      - name: Reserve the proof workspace
+        shell: bash
+        run: |
+          umask 077
+          work="$(mktemp -d "$RUNNER_TEMP/zeno-validity-core.XXXXXX")"
+          test "$(df -PB1 "$work" | awk 'NR == 2 {print $4}')" -ge "$((11 * 1024 * 1024 * 1024))"
+          printf 'VALIDITY_WORK=%s\n' "$work" >> "$GITHUB_ENV"
+
+      - uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
+        with:
+          name: zeno-proposed-batch-witness
+          path: ${{ env.VALIDITY_WORK }}
+      - uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
+        with:
+          name: checked-zeno-proposal-prover
+          path: ${{ env.VALIDITY_WORK }}
+
+      - name: Prove the entire proposed batch
+        shell: bash
+        env:
+          RUST_LOG: zkm_core_machine::utils::prove=info,zkm_prover=info
+        run: |
+          cd "$VALIDITY_WORK"
+          printf '%s  %s\n' "$WITNESS_SHA256" proposal.json "$PROVER_SHA256" simple-go-host | sha256sum --check --strict
+          chmod 0500 simple-go-host
+          ulimit -f 524288
+          /usr/bin/time -f 'PROPOSAL_PROVER_SECONDS %e MAX_RSS_KIB %M EXIT %x' \
+            timeout --kill-after=20s 100m ./simple-go-host prove proposal.json "$PROPOSAL_JOURNAL" proof.bin
+
+      - name: Reopen the Core proof and reject a changed journal
+        shell: bash
+        run: |
+          cd "$VALIDITY_WORK"
+          timeout --kill-after=10s 8m ./simple-go-host verify "$PROPOSAL_JOURNAL" proof.bin
+          printf 'PROPOSAL_CORE_SHA256 '
+          sha256sum < proof.bin | cut -d ' ' -f 1
+
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: zeno-proposed-batch-core-proof
+          path: ${{ env.VALIDITY_WORK }}/proof.bin
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 90

@@ -4,6 +4,7 @@ set -euo pipefail
 work="$1"
 source_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 host_source="${2:-$source_dir/ziren/host.rs}"
+proposal_source="${3:-}"
 executor="$work/zeno/zeno-executor"
 zenon="$work/zenon-network/go-zenon"
 ziren="$work/ziren"
@@ -23,7 +24,19 @@ checkout "$ziren" https://github.com/ProjectZKM/Ziren.git c9988a098d92bc55a85ca9
 
 guest="$executor/cmd/vault-batch-guest"
 mkdir "$guest"
-cp "$source_dir/guest.go" "$source_dir/batch-witness.go" "$guest/"
+cp "$source_dir/batch-witness.go" "$guest/"
+if [[ -n "$proposal_source" ]]; then
+  cp "$proposal_source/guest.go" "$proposal_source/proposal.go" "$proposal_source/recorded.go" "$guest/"
+  mkdir "$zenon/common/vaultvalidity"
+  cp "$proposal_source/statement/statement.go" "$zenon/common/vaultvalidity/"
+  (
+    cd "$executor"
+    go mod edit -go=1.25.4
+    go build -mod=mod -trimpath -o "$work/proposal-witness" ./cmd/vault-batch-guest
+  )
+else
+  cp "$source_dir/guest.go" "$guest/"
+fi
 cp "$source_dir/ziren/hash-ziren.go" "$zenon/common/crypto/"
 python3 -B - "$zenon/common/crypto/hash.go" "$zenon/common/errors.go" "$zenon/rpc/server/errors.go" <<'PY'
 from pathlib import Path
@@ -112,7 +125,7 @@ PY_SHARDS
 
 # serde_json already appears in this package's pinned dependency lock.
 sed -i '/^\[build-dependencies\]$/a serde_json = "1.0"' "$ziren/examples/simple-go/host/Cargo.toml"
-if [[ "$#" -eq 2 ]]; then
+if [[ -n "${2:-}" ]]; then
   sed -i '/^zkm-sdk = { workspace = true }$/a zkm-prover = { workspace = true }\nbincode = "1.3.3"' \
     "$ziren/examples/simple-go/host/Cargo.toml"
   python3 -B - "$ziren/examples/Cargo.lock" <<'PY_LOCK'

@@ -31,7 +31,29 @@ def insert(path, anchor, prefix):
     path.write_text(original.replace(anchor, prefix + anchor), encoding="utf-8")
 
 
+def install_validity_gate(node, guest_key):
+    if re.fullmatch(r"0x[0-9a-f]{64}", guest_key) is None:
+        raise ValueError("Expected a pinned proposed-batch guest key")
+    source = Path(__file__).resolve().parent.parent / "zeno-validity-statement"
+    dispatch = node / "vm/embedded/embedded.go"
+    original = dispatch.read_text(encoding="utf-8")
+    method = "implementation.SettlementSubmitBatchMethod{MethodName: cabi.SettlementSubmitBatchMethodName}"
+    replacement = "implementation.SettlementValiditySubmitBatchMethod{MethodName: cabi.SettlementSubmitBatchMethodName}"
+    if original.count(method) != 1:
+        raise ValueError("Pinned SubmitBatch dispatch differs")
+    dispatch.write_text(original.replace(method, replacement), encoding="utf-8")
+    implementation = dispatch.parent / "implementation"
+    for name in ("settlement_validity_devnet.go", "settlement_validity_devnet_test.go"):
+        shutil.copyfile(source / "node" / name, implementation / name)
+    package = node / "common/vaultvalidity"
+    package.mkdir()
+    shutil.copyfile(source / "statement/statement.go", package / "statement.go")
+    (implementation / "vault-validity-guest-key.txt").write_text(guest_key + "\n", encoding="ascii")
+
+
 if __name__ == "__main__":
+    if len(sys.argv) not in (3, 4):
+        raise SystemExit("Expected NODE RECORDED_GUEST_KEY [PROPOSED_GUEST_KEY]")
     node = Path(sys.argv[1])
     guest_key = sys.argv[2]
     if re.fullmatch(r"0x[0-9a-f]{64}", guest_key) is None:
@@ -51,6 +73,8 @@ if __name__ == "__main__":
     shutil.copyfile(Path(__file__).with_name("settlement_groth16_devnet.go"), implementation / "settlement_groth16_devnet.go")
     (implementation / "vault-r4-vk.bin").write_bytes(circuit_key)
     (implementation / "vault-r4-guest-key.txt").write_text(guest_key + "\n", encoding="ascii")
+    if len(sys.argv) == 4:
+        install_validity_gate(node, sys.argv[3])
     # Match the gnark replacement declared by the pinned Ziren wrapper.
     subprocess.run([
         "go", "mod", "edit",
