@@ -1,0 +1,75 @@
+name: Zeno proposed batch statement
+
+on:
+  push:
+    branches: [prove-proposed-zeno-batch]
+    paths:
+      - .github/workflows/zeno-validity-statement.yml
+      - research/zeno-validity-statement/**.go
+      - research/zeno-validity-statement/check-statement.py
+      - research/zeno-batch-proof/ziren/build.sh
+
+permissions:
+  contents: read
+
+jobs:
+  statement:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 48
+    env:
+      GIT_TERMINAL_PROMPT: '0'
+      GOTOOLCHAIN: local
+      GOWORK: 'off'
+      CARGO_BUILD_JOBS: '3'
+      RUSTFLAGS: '-C target-cpu=x86-64-v3'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
+        with:
+          go-version: '1.25.4'
+          cache: false
+
+      - name: Build the native proposal witness tool and the pinned Ziren guest
+        shell: bash
+        run: |
+          umask 077
+          work="$(mktemp -d "$RUNNER_TEMP/zeno-validity.XXXXXX")"
+          free_bytes="$(df -PB1 "$work" | awk 'NR == 2 {print $4}')"
+          test "$free_bytes" -ge "$((23 * 1024 * 1024 * 1024))"
+          printf 'VALIDITY_WORK=%s\n' "$work" >> "$GITHUB_ENV"
+          if ! command -v protoc >/dev/null; then
+            timeout 180s sudo apt-get -q update
+            timeout 180s sudo apt-get -q install -y protobuf-compiler
+          fi
+          timeout 35m bash research/zeno-batch-proof/ziren/build.sh "$work" '' \
+            "$GITHUB_WORKSPACE/research/zeno-validity-statement"
+
+      - name: Cross-check the new journal and execute the proposal guest
+        shell: bash
+        run: |
+          archive=research/zeno-batch-proof
+          work="$VALIDITY_WORK"
+          for stem in batch execution; do
+            digest="$(cat "$archive/$stem.sha256")"
+            [[ "$digest" =~ ^[0-9a-f]{64}$ ]]
+            printf '%s  %s\n' "$digest" "$archive/$stem.json" | sha256sum --check --strict
+          done
+          timeout 120s "$work/proposal-witness" "$archive/batch.json" "$archive/execution.json" \
+            "$work/proposal.json" | tee "$work/native.log"
+          python3 -B research/zeno-validity-statement/check-statement.py "$work/proposal.json" "$work/native.log"
+          journal="$(awk '$1 == "PROPOSAL_JOURNAL" {print $2}' "$work/native.log")"
+          [[ "$journal" =~ ^[0-9a-f]{64}$ ]]
+          timeout --kill-after=10s 6m "$work/target/release/simple-go-host" execute "$work/proposal.json" "$journal"
+          printf 'PROPOSAL_WITNESS_SHA256 '
+          sha256sum < "$work/proposal.json" | cut -d ' ' -f 1
+
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: zeno-proposed-batch-witness
+          path: ${{ env.VALIDITY_WORK }}/proposal.json
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 30
