@@ -22,6 +22,8 @@ The [Zeno contract authorization fixture](research/zeno-contract-authorization/R
 
 The [Zeno devnet batch experiment](research/zeno-batch-proof/README.md) captures three ordered calls in one batch and supplies the full transition to a Ziren execution-proof workflow.
 
+The [Zeno Settlement experiment](research/zeno-settlement-proof/README.md) wraps that archived proof in Groth16 and verifies it through embedded Settlement on an isolated devnet. The recorded evidence includes transaction hashes and receipt state proofs.
+
 The execution replay fixture adds a second check before release. It rebuilds the devnet batches from their L1 inputs and compares the computed commitments with the proven Settlement entries. [Execution replay evidence](research/zeno-execution-replay/README.md)
 
 The Groth16 experiment proves the selected authorization call and its two state writes against a public statement derived from the recorded replay. [Authorization proof experiment](research/authorization-proof/README.md)

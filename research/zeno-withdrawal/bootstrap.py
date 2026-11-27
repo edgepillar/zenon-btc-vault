@@ -23,7 +23,7 @@ def frontier(port):
     try:
         with OPENER.open(request, timeout=4) as response:
             raw = response.read(RPC_LIMIT + 1)
-    except (URLError, TimeoutError):
+    except (URLError, TimeoutError, ConnectionError):
         return None
     if len(raw) > RPC_LIMIT:
         raise RuntimeError("Devnet bootstrap RPC exceeded its byte limit")
