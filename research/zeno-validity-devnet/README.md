@@ -1,0 +1,69 @@
+# Live proof-bearing SubmitBatch
+
+This experiment applies the [proposed batch statement](../zeno-validity-statement/README.md)
+to three fresh `CallL2` inputs on isolated chain 69. The pinned devnet builds
+the PR 12 Settlement overlay with the verified proposal guest key. Four setup
+batches deploy the immutable authorizer and buy its storage using the existing
+devnet executor. The authorizer runs under the pinned Go WASM runtime.
+
+## From pending inputs to proof
+
+The capture stops the disposable executor after the fourth setup batch. It
+queues three calls, waits for their L1 receives and selects a v3 Momentum. At
+that checkpoint, the input-sequence cursor is at batch 4 with four consumed
+inputs. The new batch is absent, and the three outstanding ordinals point to
+the captured sends. The witness builder checks these values against the
+Momentum state root and replays all four setup batches from their L1 inputs.
+It uses the resulting pre-state and the three confirmed source inputs to
+produce the prospective commitment and public journal.
+
+The devnet is rebuilt on a fresh runner from the pinned source and a cold
+checkpoint. The checkpoint manifest identifies files from the five nodes'
+chain, consensus, rollback cache and state-tree databases. Each unique object
+is stored once by its digest. The fresh runner verifies the manifest, restores
+only those databases, and checks the same genesis, v3 checkpoint and pending
+ordinals before the proof run can begin.
+
+The proof workflow binds the exact witness, guest and journal. It produces a
+Core proof, verifies the serialized proof, aggregates it, verifies the BN254
+outer proof and generates the 256-byte Groth16 wrapper. The wrapper is verified
+with the pinned Ziren v2.0.0 release key. Successful jobs publish individual
+outputs so later stages can reuse them by digest.
+
+## Captured checkpoint
+
+The capture job used source revision `02a4833d5c5e5ad77de8352672b5ea56f1f00684`.
+It selected Momentum 99 with hash
+`225b785c49e5cd3fa8fd15b7aac661491f99b222978c3e7f1af423d5ebd65aed`
+and root `53b9b175f1a5d44783791e8c7cf05a501a01832c83b05ea2377e829df6c46bfd`.
+The three calls were admitted and batch 4 was absent. The cold checkpoint
+contains 80 file references to 40 distinct objects.
+[Capture job](https://github.com/edgepillar/zenon-btc-vault/actions/runs/46026658716/job/140599679686)
+
+The preflight restored the exact checkpoint on a fresh runner and proved the
+same ordinals, batch absence and cursor at the resumed chain. It reached
+Momentum 120 with the proposal still pending. The separate proof tool build
+reproduced the proposal guest ELF and pinned guest key.
+[Restore preflight](https://github.com/edgepillar/zenon-btc-vault/actions/runs/46026658716/job/140611460946) · [Proof tools](https://github.com/edgepillar/zenon-btc-vault/actions/runs/46026102217/job/140597785715)
+
+| Item | Value |
+| --- | --- |
+| Proposal witness SHA-256 | `a2b3f422f2e8db88acf1807b8b2f5a4d51bcaf811db916a8650e914a90dfff12` |
+| Checkpoint TAR SHA-256 | `01e6993848bcce8aa91c584d56671dd75281de5b209775fe25da75f767c7208d` |
+| Journal | `42b7c623baa319b2d79e95f38b183bd9a44feb4e25ae8cdcbead3ffc06399f03` |
+| Ending input link | `16e9b3992026ad9253a182f01e68a0eef02b5d38cc5af55e600e68b066cb340b` |
+
+## Acceptance evidence
+
+The final runner verifies the checkpoint and journal again and submits the
+proof once through Settlement's `SubmitBatch` with the configured devnet
+executor. The client checks the embedded receive status and reads the batch,
+cursor and input-chain anchor under the receive Momentum's state root. The
+producer and RPC node must agree on that Momentum. The accepted batch must
+match all seven proposed commitment hashes. The cursor must advance to batch
+5 with seven consumed inputs. The stored anchor must contain the new cursor
+and the ending input link calculated before proving.
+
+The protocol profile retains the Phase 1 setup batches and withdrawal delay.
+The result is scoped to the three-call authorizer profile and the devnet
+overlay. [Phase 2 outline](https://github.com/Zeno-L2/zeno-docs/blob/d74ba1fc4b01583af0daf33a2dedfc84ea2b9419/phase-2/SPEC.md)
