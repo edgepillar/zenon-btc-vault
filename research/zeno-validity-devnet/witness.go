@@ -20,7 +20,6 @@ import (
 	"github.com/Zeno-L2/zeno-executor/plugins/wasm"
 	"github.com/zenon-network/go-zenon/common/types"
 	"github.com/zenon-network/go-zenon/common/vaultvalidity"
-	"github.com/zenon-network/go-zenon/vm/embedded/definition"
 )
 
 const setupBatches = 4
