@@ -53,6 +53,29 @@ reproduced the proposal guest ELF and pinned guest key.
 | Journal | `42b7c623baa319b2d79e95f38b183bd9a44feb4e25ae8cdcbead3ffc06399f03` |
 | Ending input link | `16e9b3992026ad9253a182f01e68a0eef02b5d38cc5af55e600e68b066cb340b` |
 
+## Verified proof stages
+
+The proving run selected controller revision `9d66cb2b376c61d143e8534e0c39c0fcf2e43525`.
+It verified the serialized Core proof for the new journal and aggregated all
+167 shards. The resulting recursive proof passed read-back verification for
+the same journal and guest key.
+
+| Stage | Bytes | SHA-256 | Job |
+| --- | ---: | --- | --- |
+| Ziren Core | 146,349,466 | `2189de0a3dec19aec6f2d01ff1dfdc2b2024f506e93cd19628a8e082999af85b` | [Core](https://github.com/edgepillar/zenon-btc-vault/actions/runs/46030531390/job/140612973697) |
+| Recursive proof | 290,588 | `83a41ad0a140c56a18f2390604d9f003418e61b709ab6cf882293492f0ffcb9a` | [Recursion](https://github.com/edgepillar/zenon-btc-vault/actions/runs/46030531390/job/140642006726) |
+
+The verified BN254 outer proof has SHA-256
+`78d2dcb49710d6e825a776d787690d556581d50eac8238d3b5cfb73deb2001af`.
+[Outer proof job](https://github.com/edgepillar/zenon-btc-vault/actions/runs/46030531390/job/140667915490)
+
+The 256-byte Groth16 proof passed verification against the pinned release key.
+Its raw SHA-256 is
+`a1e1b629a6d38483e2c11174e28b948507e61973cdb74fc5a21d5f168a1dd30d`.
+The fixture JSON SHA-256 is
+`6067cb907a1bd3fdd9ff23976f51d80d86886c0c1bb71d35e9f602ed56e1e839`.
+[Groth16 job](https://github.com/edgepillar/zenon-btc-vault/actions/runs/46030531390/job/140678025767) · [Fixture artifact](https://github.com/edgepillar/zenon-btc-vault/actions/runs/46030531390/artifacts/15223754159)
+
 ## Acceptance evidence
 
 The final runner verifies the checkpoint and journal again and submits the
