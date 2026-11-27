@@ -1,0 +1,85 @@
+name: Zeno live validity proof tools
+
+on:
+  push:
+    branches: [prove-validity-on-devnet]
+    paths:
+      - .github/workflows/zeno-validity-live-tools.yml
+      - research/zeno-settlement-proof/prover.rs
+      - research/zeno-settlement-proof/wrap.rs
+
+permissions:
+  contents: read
+
+jobs:
+  tools:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 46
+    env:
+      GOTOOLCHAIN: local
+      GOWORK: 'off'
+      GIT_TERMINAL_PROMPT: '0'
+      CARGO_BUILD_JOBS: '3'
+      RUSTFLAGS: '-C target-cpu=x86-64-v3'
+      ZKM_IMM_WRAP_VK: 'false'
+      GUEST_ELF: '787074c160393704ec2d5cf9be784df0625e370b351e655a303f99bb890d0880'
+      GUEST_KEY: '0x00e4e8f52c5c085d833abcfacbbf0270e9832cd2af090ae12f7659c08270ffa4'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
+        with:
+          go-version: '1.25.4'
+          cache: false
+
+      - name: Build the compressor and wrapper for the verified proposal guest
+        shell: bash
+        run: |
+          umask 077
+          work="$(mktemp -d "$RUNNER_TEMP/zeno-validity-tools.XXXXXX")"
+          test "$(df -PB1 "$work" | awk 'NR == 2 { print $4 }')" -ge "$((23 * 1024 * 1024 * 1024))"
+          printf 'VALIDITY_WORK=%s\n' "$work" >> "$GITHUB_ENV"
+          if ! command -v protoc >/dev/null; then
+            timeout 180s sudo apt-get -q update
+            timeout 180s sudo apt-get -q install -y protobuf-compiler
+          fi
+          timeout 33m bash research/zeno-batch-proof/ziren/build.sh "$work" \
+            "$PWD/research/zeno-settlement-proof/wrap.rs" "$PWD/research/zeno-validity-statement" |
+            tee "$work/build.log"
+          grep -Fxq "BATCH_GUEST_ELF_SHA256 $GUEST_ELF" "$work/build.log"
+          binary="$work/target/release/simple-go-host"
+          mv "$binary" "$work/validity-wrapper"
+          actual="$(timeout 90s "$work/validity-wrapper" guest-key | awk '$1 == "SETTLEMENT_GUEST_KEY" { print $2 }')"
+          test "$actual" = "$GUEST_KEY"
+          cp research/zeno-settlement-proof/prover.rs "$work/ziren/examples/simple-go/host/src/main.rs"
+          (
+            cd "$work/ziren"
+            ZENO_GUEST_DIR="$work/zeno/zeno-executor/cmd/vault-batch-guest" CARGO_TARGET_DIR="$work/target" \
+              timeout 8m cargo build --locked --release --manifest-path examples/Cargo.toml --package simple-go-host
+          )
+          elf="$(find "$work/target/release/build" -type f -name vault-guest)"
+          printf '%s  %s\n' "$GUEST_ELF" "$elf" | sha256sum --check --strict
+          mv "$binary" "$work/validity-compressor"
+          for name in wrapper compressor; do
+            file="$work/validity-$name"
+            test "$(stat -c%s "$file")" -le "$((256 * 1024 * 1024))"
+            printf 'VALIDITY_TOOL_SHA256 %s ' "$name"
+            sha256sum < "$file" | cut -d ' ' -f 1
+          done
+
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: zeno-live-validity-compressor
+          path: ${{ env.VALIDITY_WORK }}/validity-compressor
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: 14
+
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: zeno-live-validity-wrapper
+          path: ${{ env.VALIDITY_WORK }}/validity-wrapper
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: 14

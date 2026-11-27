@@ -9,7 +9,7 @@ import { Hash, settlement, type KeyPair } from "znn-typescript-sdk"
 import { CHAIN_ID, CONFIRMATION_DEPTH, DOMAIN_ID, keyPair, waitFor } from "../src/devnet.js"
 import { observeBatch, proveBatch, type Checkpoint, type Snapshot } from "./batch-proof.js"
 import {
-  PLASMA_LIMIT, buyStorage, executorDown, expectStatus, flow, send, track, user, type Ctx, type Vault,
+  PLASMA_LIMIT, buyStorage, docker, executorDown, expectStatus, flow, send, track, user, type Ctx, type Vault,
 } from "./lib.js"
 
 const MAX_EVIDENCE_BYTES = 65_536
@@ -95,7 +95,7 @@ async function checkEvidence(evidence: Evidence, selected: Selection) {
   console.log("PASS: refused an early batch, another checkpoint, contract, module, target, batch and modified leaf")
 }
 
-async function deployAuthorizer(ctx: Ctx, artifact: string): Promise<Vault> {
+async function deployAuthorizer(ctx: Ctx, artifact: string, separateBatches = false): Promise<Vault> {
   const module = await readFile(`${artifact}.wasm`)
   assert.ok(module.length > 0 && module.length <= 65_536, "unexpected WASM module size")
   const iface = parseInterface(JSON.parse(await readFile(`${artifact}.interface.json`, "utf8")))
@@ -106,24 +106,31 @@ async function deployAuthorizer(ctx: Ctx, artifact: string): Promise<Vault> {
   assert.ok(prices, "Settlement bytecode prices are unavailable")
   const plan = settlement.planDeploy(module, IMMUTABLE_METADATA, { znnPerByteOfBytecode: prices.znnPerByteOfBytecode }, 0)
   const start = api.deployContractStart(DOMAIN_ID, plan.codeHash, plan.metadataHash, plan.totalSize, plan.chunkCount, IMMUTABLE_METADATA)
-  track(ctx, "authorizer deploy start", (await send(user, start)).hash, (r) => expectStatus(r, "SUCCESS"))
+  const started = track(ctx, "authorizer deploy start", (await send(user, start)).hash, (r) => expectStatus(r, "SUCCESS"))
+  if (separateBatches) assert.equal((await started.at("latest")).batchId, 0)
   for (const chunk of plan.chunks) {
     const transaction = api.deployContractChunk(DOMAIN_ID, plan.codeHash, chunk.index, chunk.chunkHash, chunk.data)
-    track(ctx, `authorizer deploy chunk ${chunk.index}`, (await send(user, transaction)).hash, (r) => expectStatus(r, "SUCCESS"))
+    const submitted = track(ctx, `authorizer deploy chunk ${chunk.index}`, (await send(user, transaction)).hash, (r) => expectStatus(r, "SUCCESS"))
+    if (separateBatches) assert.equal((await submitted.at("latest")).batchId, 1)
   }
   const { hash } = await send(user, api.deployContractFinalize(DOMAIN_ID, plan.codeHash, plan.fee))
   const deploy = track(ctx, "authorizer deploy", hash, (r) => expectStatus(r, "SUCCESS"))
   const contractId = Hash.parse((await deploy.at("pending")).receipt.contractId)
   assert.notEqual(contractId.toString(), "00".repeat(32), "deployment must have a contract ID")
+  if (separateBatches) assert.equal((await deploy.at("latest")).batchId, 2)
   return { iface, codeHash, contractId, deployFee: plan.fee }
 }
 
-async function authorize(ctx: Ctx, contract: Vault, caller: KeyPair, digest: string, label: string, abortCode: number, queued: boolean) {
+function sendAuthorization(ctx: Ctx, contract: Vault, caller: KeyPair, digest: string) {
   const transaction = ctx.zenon.embedded.settlement.callL2(
     DOMAIN_ID, contract.contractId, PLASMA_LIMIT,
     prepareCall(contract.iface, "authorize", [Buffer.from(digest, "hex")]),
   )
-  const { hash, receiveHeight } = await send(caller, transaction)
+  return send(caller, transaction)
+}
+
+async function authorize(ctx: Ctx, contract: Vault, caller: KeyPair, digest: string, label: string, abortCode: number, queued: boolean) {
+  const { hash, receiveHeight } = await sendAuthorization(ctx, contract, caller, digest)
   const receipt = track(ctx, label, hash, (r) => {
     expectStatus(r, abortCode === 0 ? "SUCCESS" : "REVERT")
     assert.equal(r.receipt.contractId, contract.contractId.toString())
@@ -132,6 +139,37 @@ async function authorize(ctx: Ctx, contract: Vault, caller: KeyPair, digest: str
   })
   if (!queued) await receipt.at("pending")
   return { hash: hash.toString(), receipt, receiveHeight }
+}
+
+async function capturePending(ctx: Ctx, artifact: string, output: string) {
+  const deployed = await deployAuthorizer(ctx, artifact, true)
+  const quota = await buyStorage(ctx, deployed, 96n)
+  assert.equal((await quota.at("latest")).batchId, 3)
+  await docker("stop", ctx.executor)
+  assert.equal(await docker("inspect", "-f", "{{.State.Running}}", ctx.executor), "false")
+
+  const contract = deployed.contractId.toString()
+  const digest = createHash("sha256").update("zeno-validity-devnet-authorizer-v1\x00").update(contract, "hex").digest("hex")
+  const first = await sendAuthorization(ctx, deployed, keyPair("admin"), digest)
+  const second = await sendAuthorization(ctx, deployed, user, digest)
+  const third = await sendAuthorization(ctx, deployed, user, "ff".repeat(32))
+  const minimum = third.receiveHeight + CONFIRMATION_DEPTH
+  const header = await waitFor("the three admitted calls to reach a confirmed checkpoint", 120_000, async () => {
+    const current = await ctx.zenon.ledger.getFrontierMomentum()
+    return current.height >= minimum && current.version === 3 && current.stateRoot ? current : undefined
+  })
+  assert.equal(header.chainIdentifier, CHAIN_ID)
+  const genesis = (await ctx.zenon.ledger.getMomentumsByHeight(1, 1)).list[0]
+  assert.ok(genesis?.hash && genesis.chainIdentifier === CHAIN_ID)
+  assert.equal(await ctx.zenon.embedded.settlement.getBatch(DOMAIN_ID, 4), null, "proposed batch is already accepted")
+  const pending = {
+    schema: 1, chainId: CHAIN_ID, domain: DOMAIN_ID, batch: 4, contract,
+    moduleHash: deployed.codeHash, submitter: keyPair("executor").address.toString(),
+    genesis: genesis.hash.toString(), height: header.height, hash: header.hash.toString(), root: header.stateRoot!.toString(),
+    sends: [first, second, third].map(({ hash, receiveHeight }) => ({ hash: hash.toString(), receiveHeight })),
+  }
+  await writeFile(output, JSON.stringify(pending) + "\n", { flag: "wx", mode: 0o600 })
+  console.log(`VALIDITY_PENDING ${pending.height} ${pending.hash} ${pending.root}`)
 }
 
 async function capture(ctx: Ctx, artifact: string, targetFile: string, output: string, batchMode: boolean) {
@@ -211,6 +249,8 @@ if (mode === "caller") {
   assert.equal(createHash("sha256").update(raw).digest("hex"), second, "evidence differs from the selected capture")
   const evidence: Evidence = JSON.parse(raw.toString("utf8"))
   await checkEvidence(evidence, evidence.selection)
+} else if (mode === "capture-pending") {
+  flow("pending-validity-proposal", (ctx) => capturePending(ctx, first, second))
 } else {
   assert.ok(mode === "capture" || mode === "capture-batch", "use caller, capture, capture-batch, or replay")
   flow("contract-authorized-bitcoin-target", (ctx) => capture(ctx, first, second, third, mode === "capture-batch"))
