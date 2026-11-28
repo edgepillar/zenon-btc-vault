@@ -19,7 +19,7 @@ umask 077
 
 case "$mode" in
   capture|capture-release) capture=true ;;
-  preflight|submit|preflight-release|resume-release) capture=false ;;
+  preflight|submit|submit-native|preflight-release|resume-release) capture=false ;;
   *) exit 2 ;;
 esac
 test -n "${GITHUB_ACTIONS:-}" && test "$(uname -s)" = Linux
@@ -88,6 +88,9 @@ else
   pinned_checkout "$node" https://github.com/digitalSloth/go-zenon.git "$node_revision"
 fi
 python3 -B "$research/zeno-settlement-proof/prepare-node.py" "$node" "$recorded_key" "$guest_key"
+if [[ "$mode" = submit-native ]]; then
+  cp "$research/zeno-native-checkpoint/native_checkpoint_devnet.go" "$node/rpc/api/"
+fi
 (
   cd "$node"
   timeout 8m go mod tidy
@@ -144,7 +147,10 @@ if [[ "$capture" = true ]]; then
     sudo chown --reference="$work" "$work/checkpoint.tar"
     chmod 0600 "$work/checkpoint.tar"
   fi
+elif [[ "$mode" = submit-native ]]; then
+  devnet_command 20m submit-release "$work"
+  PYTHONPATH="$(dirname "$research"):$source_dir:$research/zeno-contract-authorization" \
+    timeout 10m python3 -B "$research/zeno-native-checkpoint/native_checkpoint.py" "$work" --check-views
 else
-  cd "$devnet"
-  timeout 18m npm exec --offline -- tsx flows/validity-submit.ts "$mode" "$work"
+  devnet_command 18m "$mode" "$work"
 fi
