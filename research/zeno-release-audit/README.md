@@ -41,3 +41,15 @@ python3 -B research/zeno-release-audit/audit.py "$EVIDENCE_DIR" \
 
 The [GitHub Actions workflow](../../.github/workflows/zeno-release-audit.yml)
 checks the run and archive provenance before replaying the evidence.
+
+## Verified replay
+
+The successful audit used revision `034cdb4fed8113c14a01a911fe41964b116f3235`.
+It reconstructed the journal and verified the 256-byte Groth16 proof with
+SHA-256 `7e1381e0c0474c438c0fcc2e1af79cbf9aeedbfb55a343870db22e22dde4e4b0`.
+All 20 state proofs passed, and the checkpoint rule rejected both mismatched
+views. The receipt matched the authorized 999,000-satoshi output.
+[Run summary](https://github.com/edgepillar/zenon-btc-vault/actions/runs/46110829171#summary-140873760172)
+
+The [audit record](https://github.com/edgepillar/zenon-btc-vault/actions/runs/46110829171/artifacts/15249263916)
+has archive SHA-256 `b6a73105ce82f72891d2a7dfd0a03a4c15af6f96f16fb88fd8fea3c4120fa026`.
