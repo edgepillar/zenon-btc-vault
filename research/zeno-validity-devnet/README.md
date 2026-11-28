@@ -125,7 +125,7 @@ overlay. [Phase 2 outline](https://github.com/Zeno-L2/zeno-docs/blob/d74ba1fc4b0
 
 ## Validity-backed Bitcoin regtest release
 
-The [release workflow](../../.github/workflows/zeno-validity-regtest-release.yml)
+The [release workflow](../../.github/workflows/zeno-release-e2e.yml)
 combines the validity proof with the existing fixed-output regtest registration.
 Bitcoin Core first funds the vault and validates a signed transaction with a
 single 999,000-satoshi payout. The authorization call commits to that

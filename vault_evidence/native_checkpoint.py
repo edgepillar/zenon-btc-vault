@@ -13,9 +13,9 @@ from urllib.error import URLError
 from urllib.request import ProxyHandler, Request, build_opener
 
 from regtest import RegtestError, require
-from regtest_release import (
-    b64, digest32, read_json, read_leaf, release, settlement_key, verify_eligible_batch, write_private, zenon_address_bytes,
-)
+
+from .proofs import b64, digest32, read_json, read_leaf, settlement_key, write_private, zenon_address_bytes
+from .regtest_release import release, verify_eligible_batch
 
 
 NODE_REVISION = "2835c436b197fece5c76adf4ba8dc1decca2e3ea"

@@ -22,7 +22,7 @@ a disagreement at the same height.
 
 ## Qualification
 
-The [workflow](../../.github/workflows/zeno-native-checkpoint.yml) restores
+The [original workflow](https://github.com/edgepillar/zenon-btc-vault/blob/5eb82c39991fa79568d9534e0f73bdc39fc9e469/.github/workflows/zeno-native-checkpoint.yml) restores
 the public database checkpoint from PR 13 and submits the associated validity
 proof. Its source run, artifact digests and raw input digests are pinned. It
 then runs the native selector and retains the state and checkpoint records.
@@ -42,11 +42,19 @@ evidence. Its controls refuse an altered signature and an altered batch
 leaf. Producer election is checked by the live nodes against their parent
 state.
 
-The [regtest release workflow](../../.github/workflows/zeno-validity-regtest-release.yml)
+The [Zeno checks workflow](../../.github/workflows/zeno-checks.yml) replays
+the [committed fixture](fixture) from the signed capture at `5eb82c3`.
+It verifies 31 signatures and six state paths over Momentum 151 through 181.
+[Original signed capture and replay](https://github.com/edgepillar/zenon-btc-vault/actions/runs/46117123125)
+
+The [regtest release workflow](../../.github/workflows/zeno-release-e2e.yml)
 uses the same selector on a new batch whose authorization binds a registered
 Bitcoin transaction. It rechecks the Bitcoin tip, refund window and
 registration after the native check and before publishing the signed bytes to
-Bitcoin Core regtest. This integration has its own acceptance run.
+Bitcoin Core regtest. The first integrated run accepted at Momentum 130,
+selected eligible Momentum 159, verified the segment through Momentum 189
+and confirmed the 999,000-satoshi output in Bitcoin regtest block 103.
+[Original integrated run](https://github.com/edgepillar/zenon-btc-vault/actions/runs/46115346873#summary-140887845505)
 
 The policy trusts the configured local full nodes, their devnet genesis and
 the pinned implementation. The 30 successors protect the selected eligible

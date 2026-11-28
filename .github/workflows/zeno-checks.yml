@@ -1,0 +1,199 @@
+name: Zeno evidence and Settlement checks
+
+on:
+  push:
+    branches: [main, consolidate-vault]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  GOWORK: 'off'
+  GOTOOLCHAIN: local
+  GIT_TERMINAL_PROMPT: '0'
+  GIT_CONFIG_COUNT: '2'
+  GIT_CONFIG_KEY_0: url.https://github.com/.insteadOf
+  GIT_CONFIG_VALUE_0: 'ssh://git@github.com/'
+  GIT_CONFIG_KEY_1: url.https://github.com/.insteadOf
+  GIT_CONFIG_VALUE_1: 'git@github.com:'
+
+jobs:
+  evidence:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 18
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
+        with:
+          go-version: '1.26.0'
+          cache: false
+
+      - name: Replay the registered withdrawal and the signed checkpoint
+        shell: bash
+        run: |
+          umask 077
+          work="$(mktemp -d "$RUNNER_TEMP/zeno-evidence.XXXXXX")"
+          audit=research/zeno-release-audit
+          native=research/zeno-native-checkpoint
+          for fixture in "$audit/fixture" "$native/fixture"; do
+            (cd "$fixture" && sha256sum --check --strict checksums.sha256)
+          done
+          GOMODCACHE="$work/modules" GOCACHE="$work/go-cache" \
+            timeout --kill-after=5s 9m bash "$audit/build-checker.sh" "$work"
+          timeout 60s python3 -B -m vault_evidence.release_audit "$audit/fixture" \
+            "$work/checker/verify-groth16" "$work/checker/groth16_vk.bin" > "$work/audit.json"
+          jq -e '.settlementProofs == 16 and .contractProofs == 4 and .recordedPayoutSats == 999000' "$work/audit.json"
+          printf '## Archived regtest release\n\n' >> "$GITHUB_STEP_SUMMARY"
+          jq -r '"- Verified \(.settlementProofs) Settlement and \(.contractProofs) contract state paths, Groth16, and the \(.recordedPayoutSats)-satoshi receipt"' \
+            "$work/audit.json" >> "$GITHUB_STEP_SUMMARY"
+          mkdir "$work/native"
+          for name in pending proposal statement fixture acceptance native-checkpoint; do
+            cp "$native/fixture/$name.json" "$work/native/"
+          done
+          GOPROXY=off GOSUMDB=off go build -trimpath -o "$work/verify-signatures" "$native/verify-signatures.go"
+          python3 -B -m vault_evidence.native_checkpoint "$work/native" --replay "$work/verify-signatures"
+          cmp "$native/fixture/native-replay.json" "$work/native/native-replay.json"
+          printf '\n## Signed checkpoint replay\n\n' >> "$GITHUB_STEP_SUMMARY"
+          jq -r '"- Verified \(.headerSignatures) signatures and \(.cutStatePaths) state paths from Momentum \(.selected.height) through \(.cut.height)"' \
+            "$work/native/native-replay.json" >> "$GITHUB_STEP_SUMMARY"
+          jq -r '"PROPOSAL_JOURNAL \(.journal)", "PROPOSAL_CHAIN_END \(.chainEnd)"' \
+            "$native/fixture/statement.json" > "$work/statement.log"
+          python3 -B -m vault_evidence.check_statement "$native/fixture/proposal.json" "$work/statement.log"
+
+      - name: Replay the recorded mainnet sample against pinned SPV source
+        shell: bash
+        env:
+          SPV_SHA: f058474d5f35cfa08cdccbf153d6fb9fbf9ab649
+        run: |
+          umask 077
+          work="$(mktemp -d "$RUNNER_TEMP/vault-mainnet-replay.XXXXXX")"
+          spv="$work/spv"
+          git init --quiet "$spv"
+          timeout 120s git -C "$spv" fetch --quiet --depth 1 https://github.com/edgepillar/zenon-spv.git "$SPV_SHA"
+          git -C "$spv" checkout --quiet --detach FETCH_HEAD
+          test "$(git -C "$spv" rev-parse HEAD)" = "$SPV_SHA"
+          mkdir "$spv/tools/vault-mainnet-observation"
+          cp research/mainnet-readiness/*.go "$spv/tools/vault-mainnet-observation/"
+          evidence="$GITHUB_WORKSPACE/research/mainnet-readiness"
+          cd "$spv"
+          timeout 3m go test -mod=readonly -count=1 -v ./tools/vault-mainnet-observation
+          timeout 90s go build -mod=readonly -trimpath -o "$work/observe" ./tools/vault-mainnet-observation
+          timeout 30s "$work/observe" replay "$evidence/evidence.json" "$(cat "$evidence/evidence.sha256")"
+
+  settlement:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 24
+    env:
+      NODE_SHA: 2835c436b197fece5c76adf4ba8dc1decca2e3ea
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
+        with:
+          go-version: '1.23.12'
+          cache: false
+      - name: Verify the proposal and acceptance rules against the pinned node
+        shell: bash
+        run: |
+          umask 077
+          work="$(mktemp -d "$RUNNER_TEMP/zeno-settlement-checks.XXXXXX")"
+          test "$(df -PB1 "$work" | awk 'NR == 2 { print $4 }')" -ge "$((13 * 1024 * 1024 * 1024))"
+          node="$work/node"
+          git init --quiet "$node"
+          timeout 120s git -C "$node" fetch --quiet --depth 1 https://github.com/digitalSloth/go-zenon.git "$NODE_SHA"
+          git -C "$node" checkout --quiet --detach FETCH_HEAD
+          test "$(git -C "$node" rev-parse HEAD)" = "$NODE_SHA"
+          recorded="$GITHUB_WORKSPACE/research/zeno-settlement-proof/groth16-fixture.json"
+          printf '%s  %s\n' "$(cat "${recorded%.json}.sha256")" "$recorded" | sha256sum --check --strict
+          vector="$GITHUB_WORKSPACE/research/zeno-native-checkpoint/fixture"
+          (cd "$vector" && sha256sum --check --strict checksums.sha256)
+          export VAULT_RECORDED_GROTH16="$recorded"
+          export VAULT_PROPOSAL_WITNESS="$vector/proposal.json"
+          export VAULT_PROPOSAL_JOURNAL="$(jq -er '.journal' "$vector/statement.json")"
+          export VAULT_PROPOSAL_CHAIN_END="$(jq -er '.chainEnd' "$vector/statement.json")"
+          python3 -B research/zeno-settlement-proof/prepare-node.py "$node" \
+            "$(jq -er '.guestKey' "$recorded")" "$(jq -er '.guestKey' "$vector/fixture.json")"
+          cd "$node"
+          timeout 14m go test -mod=mod -tags devnet -count=1 -v \
+            -run '^(TestVaultValidity.*|TestAcceptBatch_.*|TestSubmitBatchValidateSendBlock)$' \
+            ./vm/embedded ./vm/embedded/implementation
+
+  execution:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 24
+    env:
+      ZENO_DEVNET_SHA: cf1c9c0e0f0ca3b257bdbd019c5589c2c27f748f
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
+        with:
+          go-version: '1.26.8'
+          cache: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24.17.0
+          package-manager-cache: false
+      - name: Replay the recorded withdrawal and reconstruct the authorization statement
+        shell: bash
+        run: |
+          umask 077
+          work="$(mktemp -d "$RUNNER_TEMP/zeno-execution-checks.XXXXXX")"
+          test "$(df -PB1 "$work" | awk 'NR == 2 { print $4 }')" -ge "$((16 * 1024 * 1024 * 1024))"
+          devnet="$work/devnet"
+          git init --quiet "$devnet"
+          timeout 120s git -C "$devnet" fetch --quiet --depth 1 https://github.com/Zeno-L2/zeno-devnet.git "$ZENO_DEVNET_SHA"
+          git -C "$devnet" checkout --quiet --detach FETCH_HEAD
+          test "$(git -C "$devnet" rev-parse HEAD)" = "$ZENO_DEVNET_SHA"
+          withdrawal="$GITHUB_WORKSPACE/research/zeno-withdrawal"
+          printf '%s  %s\n' '81c5739a3632cea328626b5ddde0732f2324d444800c2b532f8583770538bb21' "$withdrawal/evidence.json" |
+            sha256sum --check --strict
+          cp "$withdrawal/capture.ts" "$devnet/flows/vault-evidence.ts"
+          cp "$withdrawal/batch-proof.ts" "$devnet/flows/"
+          (
+            cd "$devnet"
+            timeout 8m npm ci --no-audit --no-fund
+            timeout 2m npm run typecheck
+            timeout 60s npm exec --offline -- tsx flows/vault-evidence.ts --verify "$withdrawal/evidence.json"
+          )
+          GOTOOLCHAIN=go1.26.0 ZENO_MODE=replay timeout 4m \
+            bash research/zeno-contract-authorization/build-authorizer.sh "$devnet"
+          evidence=research/zeno-execution-replay
+          printf '%s  %s\n' "$(cat "$evidence/authorization.sha256")" "$evidence/authorization.json" | sha256sum --check --strict
+          timeout 60s "$work/verify-execution" statement "$evidence/authorization.json" \
+            "$evidence/execution.json" "$work" "$(cat "$evidence/execution.sha256")" > "$work/replay.log"
+          python3 -B - "$work" <<'PYTHON'
+          import json
+          import sys
+          from pathlib import Path
+
+          work = Path(sys.argv[1])
+          with (work / "replay.log").open("rb") as source:
+              raw = source.read(16_385)
+          if len(raw) > 16_384:
+              raise SystemExit("Replay output exceeded its byte limit")
+          prefix = b"AUTHORIZATION_STATEMENT_JSON "
+          statements = [line[len(prefix):] for line in raw.splitlines() if line.startswith(prefix)]
+          if len(statements) != 1 or not isinstance(json.loads(statements[0]), dict):
+              raise SystemExit("Replay did not select exactly one authorization statement")
+          (work / "statement.json").write_bytes(statements[0] + b"\n")
+          PYTHON
+          printf 'ZENO_EXECUTION_WORK=%s\n' "$work" >> "$GITHUB_ENV"
+
+      - name: Verify the retained Groth16 authorization proof
+        shell: bash
+        run: |
+          source=research/authorization-proof
+          work="$ZENO_EXECUTION_WORK"
+          (
+            cd "$source"
+            timeout 5m go build -mod=readonly -trimpath -o "$work/proof-tool" .
+          )
+          timeout 60s "$work/proof-tool" verify "$work/statement.json" "$source/proof.json" "$(cat "$source/proof.sha256")"

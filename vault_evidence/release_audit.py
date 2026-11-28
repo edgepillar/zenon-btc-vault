@@ -9,11 +9,13 @@ import subprocess
 import sys
 
 from regtest import RegtestError, require
-from regtest_release import GUEST_KEY, MODULE, b64, check_proof, digest32, read_leaf, word, zenon_address_bytes
 from withdrawal_authorization import REGTEST_GENESIS
 
+from .proofs import b64, check_proof, digest32, read_leaf, word, zenon_address_bytes
+from .regtest_release import GUEST_KEY, MODULE
 
-PROFILE = Path(__file__).with_name("profile.json")
+
+PROFILE = Path(__file__).resolve().parents[1] / "research" / "zeno-release-audit" / "profile.json"
 FILE_LIMITS = {
     "pending.json": 8192,
     "proposal.json": 49_152,

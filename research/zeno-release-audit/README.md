@@ -25,22 +25,21 @@ fork selection and Bitcoin confirmation and refund reconciliation.
 
 ## Replay
 
-Use the four artifacts listed in the profile. Place the seven pinned JSON
-members in one evidence directory. The verification step reads those files
-without launching nodes or requiring a wallet. Build the checker in an owned
-workspace with Go 1.26.0 and the pinned Ziren dependency files. The build
-script fetches and checks the public verification key and upstream Go lock;
-the subsequent verification runs offline.
+The seven JSON members in [fixture](fixture) match the original artifacts
+listed by the profile. Build the checker in an owned workspace with Go 1.26.0
+and the pinned Ziren dependency files. The build script fetches and checks
+the public verification key and upstream Go lock. The replay reads the
+fixture files offline.
 
 ```sh
 bash research/zeno-release-audit/build-checker.sh "$AUDIT_WORK"
-export PYTHONPATH="$PWD:$PWD/research/zeno-validity-devnet:$PWD/research/zeno-contract-authorization"
-python3 -B research/zeno-release-audit/audit.py "$EVIDENCE_DIR" \
+python3 -B -m vault_evidence.release_audit research/zeno-release-audit/fixture \
   "$AUDIT_WORK/checker/verify-groth16" "$AUDIT_WORK/checker/groth16_vk.bin"
 ```
 
-The [GitHub Actions workflow](../../.github/workflows/zeno-release-audit.yml)
-checks the run and archive provenance before replaying the evidence.
+The [Zeno checks workflow](../../.github/workflows/zeno-checks.yml) verifies
+the committed bytes and replays the evidence. The [original audit workflow](https://github.com/edgepillar/zenon-btc-vault/blob/960a5a3089595cbbc29267f0850d270caa6e6e50/.github/workflows/zeno-release-audit.yml)
+also checked the source run and archive provenance.
 
 ## Verified replay
 

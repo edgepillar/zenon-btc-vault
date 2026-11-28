@@ -2,7 +2,7 @@
 set -euo pipefail
 
 mode="$1"
-work="$2"
+work="$(cd "$2" && pwd)"
 source_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 research="$(dirname "$source_dir")"
 devnet="$work/devnet"
@@ -33,10 +33,10 @@ devnet_command() (
   timeout "$limit" npm exec --offline -- tsx flows/validity-submit.ts "$@"
 )
 
-checkpoint_command() {
-  PYTHONPATH="$(dirname "$research"):$source_dir:$research/zeno-contract-authorization" \
-    timeout 10m python3 -B "$research/zeno-native-checkpoint/native_checkpoint.py" "$work" "$@"
-}
+checkpoint_command() (
+  cd "$(dirname "$research")"
+  timeout 10m python3 -B -m vault_evidence.native_checkpoint "$work" "$@"
+)
 
 stop_owned_devnet() {
   local result=$?

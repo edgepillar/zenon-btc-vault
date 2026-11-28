@@ -4,6 +4,9 @@ A Bitcoin Core regtest fixture for a vault with a fixed withdrawal destination. 
 
 [Public research brief and roadmap](https://edgepillar.com/zenon-btc-vault-research/)
 
+The [active workflows and evidence history](docs/evidence-history.md) record
+the source of the retained devnet and regtest results.
+
 ## Run locally
 
 The unit tests require Python 3.9 or later. The integration runner uses Bitcoin Core 32.1 with wallet support and an existing empty data directory. It starts a regtest node with loopback RPC and peer networking disabled. Hosted CI runs the integration on Linux with the same pinned [Bitcoin Core release](https://bitcoincore.org/en/releases/32.1/).
@@ -31,6 +34,9 @@ The [live proof-bearing SubmitBatch experiment](research/zeno-validity-devnet/RE
 The [validity-backed regtest release](research/zeno-validity-devnet/README.md#verified-run) binds the accepted batch to a registered Bitcoin payout. The [offline release audit](research/zeno-release-audit/README.md) replays the archived evidence against the selected devnet checkpoints.
 
 The [native checkpoint experiment](research/zeno-native-checkpoint/README.md) verifies the selected devnet header and 30 successors on two local nodes. The [Praxis release statement](docs/praxis-release-statement.md) describes the evidence a later decryption witness would need.
+
+The [mainnet readiness report](research/mainnet-readiness/README.md) records
+the dated v1 header sample and the production proof requirements.
 
 The execution replay fixture adds a second check before release. It rebuilds the devnet batches from their L1 inputs and compares the computed commitments with the proven Settlement entries. [Execution replay evidence](research/zeno-execution-replay/README.md)
 

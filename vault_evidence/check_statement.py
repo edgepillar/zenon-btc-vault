@@ -7,19 +7,10 @@ import struct
 import sys
 from pathlib import Path
 
+from .proofs import zenon_address_bytes
+
 
 CHAIN_ID = 69
-ALPHABET = "qpzry9x8gf2tvdw0s3jn54khce6mua7l"
-
-
-def sender_bytes(address):
-    if len(address) != 40 or not address.startswith("z1"):
-        raise ValueError("Expected a Zenon address in the pinned vector")
-    value = 0
-    # The fixed-width vector carries 32 payload words and six checksum words.
-    for word in address[2:-6]:
-        value = (value << 5) | ALPHABET.index(word)
-    return value.to_bytes(20, "big")
 
 
 def input_record(item, ordinal):
@@ -33,7 +24,7 @@ def input_record(item, ordinal):
     ctx = item["Ctx"]
     return b"".join((
         struct.pack(">QQ", ordinal, ctx["GlobalInputIndex"]), wire[1:33],
-        sender_bytes(ctx["L1Sender"]),
+        zenon_address_bytes(ctx["L1Sender"]),
         struct.pack(">QQ", ctx["MomentumHeight"], ctx["MomentumTime"]),
         bytes.fromhex(ctx["MomentumHash"]), wire[33:73], struct.pack(">Q", size), payload,
     ))
