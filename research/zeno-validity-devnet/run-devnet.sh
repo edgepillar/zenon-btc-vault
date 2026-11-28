@@ -17,9 +17,47 @@ recorded_key="$(jq -er '.guestKey' "$research/zeno-settlement-proof/groth16-fixt
 nodes=(pillar pillar2 pillar3 observer rpc)
 umask 077
 
-test "$mode" = capture || test "$mode" = preflight || test "$mode" = submit
+case "$mode" in
+  capture|capture-release) capture=true ;;
+  preflight|submit|preflight-release|resume-release) capture=false ;;
+  *) exit 2 ;;
+esac
 test -n "${GITHUB_ACTIONS:-}" && test "$(uname -s)" = Linux
 test "$(df -PB1 "$work" | awk 'NR == 2 { print $4 }')" -ge "$((21 * 1024 * 1024 * 1024))"
+compose=(docker compose -p zeno-devnet -f "$node/docker-compose.yml")
+
+devnet_command() (
+  local limit="$1"
+  shift
+  cd "$devnet"
+  timeout "$limit" npm exec --offline -- tsx flows/validity-submit.ts "$@"
+)
+
+stop_owned_devnet() {
+  local result=$?
+  trap - EXIT
+  if [[ "$capture" = true ]]; then
+    devnet_command 90s stop-devnet || result=1
+  else
+    timeout 90s "${compose[@]}" down --timeout 45 || result=1
+  fi
+  exit "$result"
+}
+
+if [[ "$mode" = preflight-release || "$mode" = resume-release ]]; then
+  test "$(git -C "$devnet" rev-parse HEAD)" = "$devnet_revision"
+  test "$(git -C "$node" rev-parse HEAD)" = "$node_revision"
+  test -s "$work/pending.json"
+  trap stop_owned_devnet EXIT
+  timeout 4m "${compose[@]}" up -d --no-build --pull never "${nodes[@]}"
+  timeout 10m python3 -B "$research/zeno-withdrawal/bootstrap.py"
+  if [[ "$mode" = preflight-release ]]; then
+    devnet_command 5m preflight "$work"
+  else
+    devnet_command 20m submit-release "$work"
+  fi
+  exit
+fi
 
 pinned_checkout() {
   local destination="$1" url="$2" revision="$3"
@@ -33,7 +71,7 @@ pinned_checkout() {
 pinned_checkout "$devnet" https://github.com/Zeno-L2/zeno-devnet.git "$devnet_revision"
 cp "$source_dir/submit.ts" "$devnet/flows/validity-submit.ts"
 chmod 0644 "$devnet/config/gateway.json"
-if [[ "$mode" = capture ]]; then
+if [[ "$capture" = true ]]; then
   cp "$research/zeno-withdrawal/batch-proof.ts" "$devnet/flows/"
   cp "$research/zeno-contract-authorization/capture.ts" "$devnet/flows/vault-authorizer.ts"
 fi
@@ -43,7 +81,7 @@ fi
   timeout 2m npm run typecheck
 )
 
-if [[ "$mode" = capture ]]; then
+if [[ "$capture" = true ]]; then
   timeout 16m bash "$research/zeno-contract-authorization/build-authorizer.sh" "$devnet"
   test "$(git -C "$node" rev-parse HEAD)" = "$node_revision"
 else
@@ -55,7 +93,7 @@ python3 -B "$research/zeno-settlement-proof/prepare-node.py" "$node" "$recorded_
   timeout 8m go mod tidy
 )
 
-if [[ "$mode" = capture ]]; then
+if [[ "$capture" = true ]]; then
   command="$executor/cmd/vault-validity-witness"
   mkdir "$command"
   cp "$research/zeno-batch-proof/batch-witness.go" "$research/zeno-validity-statement/proposal.go" "$source_dir/witness.go" "$command/"
@@ -63,31 +101,11 @@ if [[ "$mode" = capture ]]; then
     cd "$executor"
     timeout 8m go build -mod=mod -trimpath -o "$work/validity-witness" ./cmd/vault-validity-witness
   )
-
 fi
-compose=(docker compose -p zeno-devnet -f "$node/docker-compose.yml")
-
-devnet_command() (
-  local limit="$1"
-  shift
-  cd "$devnet"
-  timeout "$limit" npm exec --offline -- tsx flows/validity-submit.ts "$@"
-)
-
-stop_owned_devnet() {
-  local result=$?
-  trap - EXIT
-  if [[ "$mode" = capture ]]; then
-    devnet_command 90s stop-devnet || result=1
-  else
-    timeout 90s "${compose[@]}" down || result=1
-  fi
-  exit "$result"
-}
 trap stop_owned_devnet EXIT
 
 timeout 12m "${compose[@]}" build pillar
-if [[ "$mode" = capture ]]; then
+if [[ "$capture" = true ]]; then
   devnet_command 18m build-executor
 else
   timeout 2m "${compose[@]}" create --no-build "${nodes[@]}"
@@ -96,7 +114,7 @@ fi
 timeout 4m "${compose[@]}" up -d --no-build --pull never "${nodes[@]}"
 timeout 10m python3 -B "$research/zeno-withdrawal/bootstrap.py"
 
-if [[ "$mode" = capture ]]; then
+if [[ "$capture" = true ]]; then
   (
     cd "$devnet"
     timeout 18m npm exec --offline -- tsx src/cli.ts configure
@@ -115,13 +133,17 @@ if [[ "$mode" = capture ]]; then
   test "$ready" = 1
   (
     cd "$devnet"
-    timeout 24m npm exec --offline -- tsx flows/vault-authorizer.ts capture-pending "$work/vault_authorizer" "$work/pending.json"
+    args=("$work/vault_authorizer" "$work/pending.json")
+    if [[ "$mode" = capture-release ]]; then args+=("$work/target.hex"); fi
+    timeout 24m npm exec --offline -- tsx flows/vault-authorizer.ts capture-pending "${args[@]}"
   )
   timeout 120s "$work/validity-witness" "$work"
   timeout 4m "${compose[@]}" stop --timeout 45 "${nodes[@]}"
-  sudo python3 -B "$source_dir/checkpoint.py" save "$work/checkpoint.tar"
-  sudo chown --reference="$work" "$work/checkpoint.tar"
-  chmod 0600 "$work/checkpoint.tar"
+  if [[ "$mode" = capture ]]; then
+    sudo python3 -B "$source_dir/checkpoint.py" save "$work/checkpoint.tar"
+    sudo chown --reference="$work" "$work/checkpoint.tar"
+    chmod 0600 "$work/checkpoint.tar"
+  fi
 else
   cd "$devnet"
   timeout 18m npm exec --offline -- tsx flows/validity-submit.ts "$mode" "$work"

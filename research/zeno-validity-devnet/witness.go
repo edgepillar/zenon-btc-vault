@@ -18,6 +18,7 @@ import (
 	"github.com/Zeno-L2/zeno-executor/internal/state"
 	"github.com/Zeno-L2/zeno-executor/internal/znnd"
 	"github.com/Zeno-L2/zeno-executor/plugins/wasm"
+	"github.com/zenon-network/go-zenon/common/trie"
 	"github.com/zenon-network/go-zenon/common/types"
 	"github.com/zenon-network/go-zenon/common/vaultvalidity"
 )
@@ -25,18 +26,19 @@ import (
 const setupBatches = 4
 
 type pendingCapture struct {
-	Schema     uint64        `json:"schema"`
-	ChainID    uint64        `json:"chainId"`
-	Domain     uint32        `json:"domain"`
-	Batch      uint64        `json:"batch"`
-	Genesis    types.Hash    `json:"genesis"`
-	Height     uint64        `json:"height"`
-	Hash       types.Hash    `json:"hash"`
-	Root       types.Hash    `json:"root"`
-	Contract   types.Hash    `json:"contract"`
-	ModuleHash types.Hash    `json:"moduleHash"`
-	Submitter  types.Address `json:"submitter"`
-	Sends      []struct {
+	Schema        uint64        `json:"schema"`
+	ChainID       uint64        `json:"chainId"`
+	Domain        uint32        `json:"domain"`
+	Batch         uint64        `json:"batch"`
+	Genesis       types.Hash    `json:"genesis"`
+	Height        uint64        `json:"height"`
+	Hash          types.Hash    `json:"hash"`
+	Root          types.Hash    `json:"root"`
+	Contract      types.Hash    `json:"contract"`
+	ModuleHash    types.Hash    `json:"moduleHash"`
+	Submitter     types.Address `json:"submitter"`
+	Authorization *types.Hash   `json:"authorization"`
+	Sends         []struct {
 		Hash          types.Hash `json:"hash"`
 		ReceiveHeight uint64     `json:"receiveHeight"`
 	} `json:"sends"`
@@ -103,7 +105,7 @@ func readInputs(pending pendingCapture, client *znnd.Client, reader *settlement.
 	return inputs, nil
 }
 
-func replaySetup(work string, view *settlement.View, inputs []ledger.Input, submitter types.Address) ([]batchLeaf, types.Hash, error) {
+func replaySetup(work string, view *settlement.View, inputs []ledger.Input, pending pendingCapture) ([]batchLeaf, types.Hash, error) {
 	var parent types.Hash
 	plugin, err := wasm.New(wasm.Config{NetworkName: "devnet", CodeStorePath: filepath.Join(work, "setup-code")})
 	if err != nil {
@@ -111,8 +113,9 @@ func replaySetup(work string, view *settlement.View, inputs []ledger.Input, subm
 	}
 	defer plugin.Close()
 	stream := &proposalInputs{inputs: inputs}
+	store := state.OpenEmpty()
 	driver, err := batch.New(batch.Config{
-		DomainID: domainID, ExecutorID: submitter, Domain: plugin, Store: state.OpenEmpty(), Inputs: stream,
+		DomainID: domainID, ExecutorID: pending.Submitter, Domain: plugin, Store: store, Inputs: stream,
 		Bundles: &proposalBundle{}, Receipts: proposalReceipts{},
 	})
 	if err != nil {
@@ -154,7 +157,54 @@ func replaySetup(work string, view *settlement.View, inputs []ledger.Input, subm
 		ordered = append(ordered, batchLeaf{path, value})
 	}
 	slices.SortFunc(ordered, func(a, b batchLeaf) int { return bytes.Compare(a.Path[:], b.Path[:]) })
+	if pending.Authorization != nil {
+		if err := proveAuthorization(work, pending, store, driver, inputs[len(inputs)-1].Ctx.GlobalInputIndex); err != nil {
+			return nil, parent, err
+		}
+	}
 	return ordered, parent, nil
+}
+
+func contractPath(contract types.Hash, key []byte) trie.Path {
+	return trie.Path(types.NewHash(append(bytes.Clone(contract[:]), key...)))
+}
+
+func proveAuthorization(work string, pending pendingCapture, store *state.Store, driver *batch.Driver, last uint64) error {
+	slot := contractPath(pending.Contract, []byte{1})
+	present, _, emptySlot, err := store.Prove(slot)
+	if err != nil || present {
+		return errors.New("the prior state must have an unused authorization slot")
+	}
+	result, ok, err := driver.NextBatchTo(last)
+	if err != nil || !ok || len(result.Receipts) != callCount {
+		return fmt.Errorf("replay release authorization: %v", err)
+	}
+	type leaf struct {
+		Value []byte `json:"value"`
+		Proof []byte `json:"proof"`
+	}
+	proofs := make([]leaf, 0, 3)
+	for _, field := range []struct {
+		key  []byte
+		want []byte
+	}{
+		{[]byte{0, 2}, pending.ModuleHash[:]},
+		{[]byte{0, 3}, []byte{0}},
+		{[]byte{1}, pending.Authorization[:]},
+	} {
+		present, value, proof, err := store.Prove(contractPath(pending.Contract, field.key))
+		if err != nil || !present || !bytes.Equal(value, field.want) {
+			return fmt.Errorf("release state leaf %x differs", field.key)
+		}
+		proofs = append(proofs, leaf{value, proof})
+	}
+	return writeOutput(work, "authorization.json", struct {
+		Contract     types.Hash `json:"contract"`
+		PreState     types.Hash `json:"preState"`
+		PostState    types.Hash `json:"postState"`
+		PriorAbsence []byte     `json:"priorAbsence"`
+		Proofs       []leaf     `json:"proofs"`
+	}{pending.Contract, result.Commitment.PreStateRoot, result.Commitment.PostStateRoot, emptySlot, proofs})
 }
 
 func writeOutput(work, name string, value any) error {
@@ -212,7 +262,7 @@ func run(work string) error {
 	if err != nil {
 		return err
 	}
-	leaves, parent, err := replaySetup(work, view, inputs[:setupBatches], pending.Submitter)
+	leaves, parent, err := replaySetup(work, view, inputs, pending)
 	if err != nil {
 		return err
 	}

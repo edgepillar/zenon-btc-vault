@@ -164,7 +164,7 @@ function withProof(commitment: Buffer, proof: Buffer): Buffer {
 }
 
 async function main(mode: string, work: string) {
-  assert.ok(mode === "preflight" || mode === "submit")
+  assert.ok(mode === "preflight" || mode === "submit" || mode === "submit-release")
   const pending = await readJson<Pending>(join(work, "pending.json"), 8192)
   const proposal = await readJson<Proposal>(join(work, "proposal.json"), 49_152)
   const statement = await readJson<{ journal: string; chainEnd: string }>(join(work, "statement.json"), 2048)
@@ -229,11 +229,24 @@ async function main(mode: string, work: string) {
     send: sent.hash.toString(), receive: receive.hash.toString(), receiveCode,
     dataBytes: transaction.data.length, basePlasma: included.basePlasma, usedPlasma: included.usedPlasma, ...observed,
   }
+  let eligible: (Awaited<ReturnType<typeof observe>> & { finalizeAtHeight: number }) | undefined
+  if (mode === "submit-release") {
+    const finalized = await readState(ledger, await checkpoint(ledger, accepted.height), KEYS.batchEntry(DOMAIN_ID, BATCH), "batchEntry")
+    assert.ok(finalized.decoded)
+    const finalizeAtHeight = Number(finalized.decoded.finalizeAtHeight)
+    assert.ok(Number.isSafeInteger(finalizeAtHeight) && accepted.height < finalizeAtHeight)
+    await waitHeight(finalizeAtHeight + CONFIRMATION_DEPTH)
+    const observation = await observe(ledger, finalizeAtHeight, true, commitment, statement.chainEnd)
+    assert.equal(observation.batch.value, accepted.batch.value)
+    assert.equal(observation.anchor.value, accepted.anchor.value)
+    eligible = { ...observation, finalizeAtHeight }
+    console.log(`VALIDITY_ELIGIBLE ${eligible.height} ${eligible.hash}`)
+  }
   const result = JSON.stringify({
     schema: 1, chainId: CHAIN_ID, domain: DOMAIN_ID, batch: Number(BATCH), genesis: pending.genesis,
     journal: statement.journal, guestKey: GUEST_KEY, chainEnd: statement.chainEnd, commitment: proposal.commitment,
     proofSha256: createHash("sha256").update(proof).digest("hex"), inputSends: pending.sends,
-    admitted, before, resumed, accepted,
+    admitted, before, resumed, accepted, ...(eligible ? { eligible } : {}),
   }) + "\n"
   assert.ok(Buffer.byteLength(result) <= 96 * 1024)
   await writeFile(join(work, "acceptance.json"), result, { flag: "wx", mode: 0o600 })

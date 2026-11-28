@@ -141,7 +141,7 @@ async function authorize(ctx: Ctx, contract: Vault, caller: KeyPair, digest: str
   return { hash: hash.toString(), receipt, receiveHeight }
 }
 
-async function capturePending(ctx: Ctx, artifact: string, output: string) {
+async function capturePending(ctx: Ctx, artifact: string, output: string, targetFile?: string) {
   const deployed = await deployAuthorizer(ctx, artifact, true)
   const quota = await buyStorage(ctx, deployed, 96n)
   assert.equal((await quota.at("latest")).batchId, 3)
@@ -149,7 +149,10 @@ async function capturePending(ctx: Ctx, artifact: string, output: string) {
   assert.equal(await docker("inspect", "-f", "{{.State.Running}}", ctx.executor), "false")
 
   const contract = deployed.contractId.toString()
-  const digest = createHash("sha256").update("zeno-validity-devnet-authorizer-v1\x00").update(contract, "hex").digest("hex")
+  const target = targetFile === undefined ? null : (await readFile(targetFile, "utf8")).trim()
+  const digest = target === null ?
+    createHash("sha256").update("zeno-validity-devnet-authorizer-v1\x00").update(contract, "hex").digest("hex") :
+    targetCommitment(contract, target)
   const first = await sendAuthorization(ctx, deployed, keyPair("admin"), digest)
   const second = await sendAuthorization(ctx, deployed, user, digest)
   const third = await sendAuthorization(ctx, deployed, user, "ff".repeat(32))
@@ -167,6 +170,7 @@ async function capturePending(ctx: Ctx, artifact: string, output: string) {
     moduleHash: deployed.codeHash, submitter: keyPair("executor").address.toString(),
     genesis: genesis.hash.toString(), height: header.height, hash: header.hash.toString(), root: header.stateRoot!.toString(),
     sends: [first, second, third].map(({ hash, receiveHeight }) => ({ hash: hash.toString(), receiveHeight })),
+    ...(target === null ? {} : { authorization: digest }),
   }
   await writeFile(output, JSON.stringify(pending) + "\n", { flag: "wx", mode: 0o600 })
   console.log(`VALIDITY_PENDING ${pending.height} ${pending.hash} ${pending.root}`)
@@ -250,7 +254,7 @@ if (mode === "caller") {
   const evidence: Evidence = JSON.parse(raw.toString("utf8"))
   await checkEvidence(evidence, evidence.selection)
 } else if (mode === "capture-pending") {
-  flow("pending-validity-proposal", (ctx) => capturePending(ctx, first, second))
+  flow("pending-validity-proposal", (ctx) => capturePending(ctx, first, second, third))
 } else {
   assert.ok(mode === "capture" || mode === "capture-batch", "use caller, capture, capture-batch, or replay")
   flow("contract-authorized-bitcoin-target", (ctx) => capture(ctx, first, second, third, mode === "capture-batch"))

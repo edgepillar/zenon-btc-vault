@@ -25,7 +25,7 @@ from regtest import (
 from withdrawal_authorization import REGTEST_GENESIS, encode_bitcoin_target
 
 
-def run_capture(rpc, devnet, artifact, target_file, evidence_file, replay_binary, execution_file):
+def prepare_registration(rpc):
     rpc.call("createwallet", "funding")
     miner, recipient = [rpc.call("getnewaddress", "", "bech32", wallet=True) for _ in range(2)]
     script = rpc.call("validateaddress", recipient)["scriptPubKey"]
@@ -45,6 +45,14 @@ def run_capture(rpc, devnet, artifact, target_file, evidence_file, replay_binary
     require(genesis == REGTEST_GENESIS, "Expected the Bitcoin regtest genesis")
     tip = rpc.call("getbestblockhash")
     require(not rpc.call("getrawmempool"), "Registration admitted a transaction to the mempool")
+    return registered, miner, refund_height, vault, tip, genesis
+
+
+def run_capture(rpc, devnet, artifact, target_file, evidence_file, replay_binary, execution_file):
+    registered, miner, _, _, tip, genesis = prepare_registration(rpc)
+    withdrawal = registered.withdrawal
+    signed = registered.signed_transaction
+    outpoint = {"txid": withdrawal.txid, "vout": withdrawal.vout}
     target = encode_bitcoin_target(registered.withdrawal, genesis)
     with target_file.open("x", encoding="ascii") as output:
         output.write(target.hex() + "\n")
@@ -75,7 +83,7 @@ def run_capture(rpc, devnet, artifact, target_file, evidence_file, replay_binary
     require(rpc.call("getblockhash", 0) == genesis, "The Bitcoin network changed before release")
     release = registered.release_signed_transaction(withdrawal)
     require(release == signed, "The registration did not return the original bytes")
-    confirm_spend(rpc, release, outpoint, script, miner)
+    confirm_spend(rpc, release, outpoint, withdrawal.recipient_script_pubkey, miner)
     print("PASS: mined the exact registered Bitcoin release after verifying Zeno state and re-executing the batches", flush=True)
 
 

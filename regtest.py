@@ -70,8 +70,11 @@ class BitcoinRPC:
 
 
 @contextmanager
-def start_regtest(bitcoind, datadir):
-    require(datadir.is_dir() and not any(datadir.iterdir()), "Use an existing empty data directory")
+def start_regtest(bitcoind, datadir, *, resume_tip=None):
+    if resume_tip is None:
+        require(datadir.is_dir() and not any(datadir.iterdir()), "Use an existing empty data directory")
+    else:
+        require((datadir / "regtest" / "blocks" / "blk00000.dat").is_file(), "Missing the owned regtest chain")
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as port_probe:
         port_probe.bind(("127.0.0.1", 0))
         port = port_probe.getsockname()[1]
@@ -100,6 +103,8 @@ def start_regtest(bitcoind, datadir):
                 time.sleep(0.1)
         require(chain == "regtest", "The harness requires Bitcoin regtest")
         require(rpc.call("getnetworkinfo")["networkactive"] is False, "Peer networking must be off")
+        if resume_tip is not None:
+            require(rpc.call("getbestblockhash") == resume_tip, "The reopened Bitcoin tip differs")
         yield rpc
     finally:
         if node.poll() is None:
@@ -261,13 +266,14 @@ def mutate_recipient(raw, original_script, replacement_script):
 
 def confirm_spend(rpc, raw, source, expected_script, miner):
     txid = rpc.call("sendrawtransaction", raw)
-    rpc.call("generatetoaddress", 1, miner)
+    block, = rpc.call("generatetoaddress", 1, miner)
     spent = rpc.call("gettxout", source["txid"], source["vout"], False)
     received = rpc.call("gettxout", txid, 0, False)
     require(spent is None, "The intended vault output was not consumed")
     require(received is not None, "The payout was not confirmed")
     require(received["scriptPubKey"]["hex"] == expected_script, "Unexpected payout script")
     require(received["value"] * COIN == PAYMENT_SATS, "Unexpected payout amount")
+    return txid, block
 
 
 def run_controls(rpc):

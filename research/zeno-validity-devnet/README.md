@@ -122,3 +122,73 @@ bound to run `46052640002`, attempt 1.
 The protocol profile retains the Phase 1 setup batches and withdrawal delay.
 The result is scoped to the three-call authorizer profile and the devnet
 overlay. [Phase 2 outline](https://github.com/Zeno-L2/zeno-docs/blob/d74ba1fc4b01583af0daf33a2dedfc84ea2b9419/phase-2/SPEC.md)
+
+## Validity-backed Bitcoin regtest release
+
+The [release workflow](../../.github/workflows/zeno-validity-regtest-release.yml)
+combines the validity proof with the existing fixed-output regtest registration.
+Bitcoin Core first funds the vault and validates a signed transaction with a
+single 999,000-satoshi payout. The authorization call commits to that
+registration's Bitcoin genesis, funding outpoint, recipient script and amount.
+The witness builder exports an absence proof for the prior authorization slot
+and post-state proofs for the module hash, immutable policy and target slot.
+An independent verifier checks those paths before the proof run.
+
+The capture and release job keeps the two local chains on its runner. Dedicated
+jobs generate and verify the proofs on fresh runners. They take the qualified
+proposal from the current run and pass verified proof files by digest.
+
+After the proof stages, the restored devnet accepts the same commitment through
+Settlement. The runner checks the batch entry at its eligible Momentum and
+binds the contract proofs to the accepted post-state root. Bitcoin Core reopens
+the original regtest tip, checks the registered transaction again and confirms
+the exact bytes. A successful run records the state roots, both chain receipts
+and the SHA-256 of the original signed transaction. The regtest data and signed
+transaction stay on the runner. The experiment uses a runner-held registration
+and the devnet's configured withdrawal delay.
+
+### Verified run
+
+The [successful workflow](https://github.com/edgepillar/zenon-btc-vault/actions/runs/46082713518)
+tested revision `ac9e3c868c63c44528f28c241656782408750db3` on GitHub-hosted
+Ubuntu 24.04 runners. The devnet returned receive code `1` for the 256-byte
+Groth16 proof submitted with batch 4. The acceptance job retained the same
+batch entry and input-chain anchor at the eligible checkpoint. [Settlement and regtest job](https://github.com/edgepillar/zenon-btc-vault/actions/runs/46082713518/job/140785191917)
+
+| Checkpoint | Momentum | Batch 4 | Next batch | Consumed inputs |
+| --- | ---: | --- | ---: | ---: |
+| Pending proposal | 97 | Absent | 4 | 4 |
+| Resumed devnet | 118 | Absent | 4 | 4 |
+| Accepted by Settlement | 120 | Present | 5 | 7 |
+| Eligible under the configured delay | 149 | Present | 5 | 7 |
+
+| Receipt field | Value |
+| --- | --- |
+| Settlement send | `108aff35b904c98918411483d95870215cfa8f6aae13bb75ab01dae3f9c1731b` |
+| Accepted batch post-state root | `8d7ee602328f66bb4b1f843ddbab397a589e43c634236190a26c82b7a05f28a9` |
+| Eligible Momentum | `cd646bbe9a5d65980100d966a45a09846b72d9440fb6f3ff5d2061080e8e09ce` |
+| Eligible Momentum state root | `9552ae06dee5d8fe9915a83c71822949b870f27f1fa0130624b7a0ee700c44a4` |
+| Bitcoin target authorization | `ce1c323055ddde77b4e810a97f9f9bae0f3db8a4f95199fd18eb7f76750246e6` |
+| Regtest funding outpoint | `5be4dd66ec28b6efb5d97822d51805c598a17040b519755da1876a6c9ed5f6b7:1` |
+| Confirmed regtest transaction | `bf1279d08a4f7115b045e77dd05c41694e80794186be10e8c360e067874f1fc4` |
+| Regtest block 103 | `71ddf1f648c8d3c8252947b62d73be04dca2e71f90f5c0530926b1439b9f0f70` |
+| Payout | 999,000 satoshis with one confirmation |
+| Signed transaction SHA-256 | `e4cb28275d459840252d21b5f25511b55a133c9445c1cc74e515a28411770b60` |
+
+The registration and confirmation logs contain the same SHA-256 for the
+signed transaction. Re-encoding the Bitcoin target in the release record
+reproduces the contract's authorization commitment. The rendered release
+JSON reproduces the checksum reported by the runner.
+
+| File | SHA-256 |
+| --- | --- |
+| `acceptance.json` | `4625b9db6284f24bb92ec1b2cab1c85c06acdc21d4928cd01014583b683513bb` |
+| `fixture.json` | `8a607544b60076189b0d2aae3c5401c91a6820f67638b5836a9417e78743a31c` |
+| `release.json` | `9c55b345fba3c395e92be21b794127536f680e0c931957e79d987ac43fdb4edb` |
+
+The workflow retained the proposed contract proofs, the Groth16 fixture, the
+Settlement state proofs and the Bitcoin release record. [Proposal evidence](https://github.com/edgepillar/zenon-btc-vault/actions/runs/46082713518/artifacts/15238493491) · [Groth16 fixture](https://github.com/edgepillar/zenon-btc-vault/actions/runs/46082713518/artifacts/15244437809) · [Settlement acceptance](https://github.com/edgepillar/zenon-btc-vault/actions/runs/46082713518/artifacts/15244812672) · [Bitcoin release](https://github.com/edgepillar/zenon-btc-vault/actions/runs/46082713518/artifacts/15245135382)
+
+The initial run captured its own proposal. GitHub reported a lost runner
+connection during Core proving. The successful run started with a fresh
+registration and ran each proof stage on a dedicated runner. [Initial run](https://github.com/edgepillar/zenon-btc-vault/actions/runs/46071669878/job/140749819721)

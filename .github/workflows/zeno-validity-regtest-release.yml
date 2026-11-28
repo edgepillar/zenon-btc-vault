@@ -1,0 +1,414 @@
+name: Zeno validity-backed Bitcoin regtest release
+
+on:
+  push:
+    branches: [prove-regtest-release-after-validity]
+    paths:
+      - .github/workflows/zeno-validity-regtest-release.yml
+      - regtest.py
+      - research/zeno-contract-authorization/capture.ts
+      - research/zeno-contract-authorization/regtest_capture.py
+      - research/zeno-validity-devnet/**
+      - '!research/zeno-validity-devnet/*.md'
+
+permissions:
+  actions: read
+  contents: read
+
+env:
+  GUEST_KEY: '0x00e4e8f52c5c085d833abcfacbbf0270e9832cd2af090ae12f7659c08270ffa4'
+  CORE_TOOL_RUN: '45983864343'
+  CORE_TOOL_HEAD: '97175d393548b23d1afbbc5e127159b7d943f362'
+  CORE_TOOL_ARTIFACT: '15191636225'
+  CORE_TOOL_ARCHIVE: 'sha256:da3a368f90bca1b51c8fa398937d28ba4b38217280229948ba7b7a2256814edb'
+  CORE_TOOL_SHA256: '1d735a662a4fb3f706863fe8de1ae30e547edd607f8f9e591e7a797b27a5e1a1'
+  TOOLS_RUN: '46026102217'
+  TOOLS_HEAD: '7f4591481b2c9ea6b35afccc8b895ea0e4f20942'
+  COMPRESSOR_ARTIFACT: '15212891808'
+  COMPRESSOR_ARCHIVE: 'sha256:7340ed78fc477a53c77be7b809e1106bb33a0427ad79bdb320b617c74cf46dea'
+  COMPRESSOR_SHA256: '04bb0da0368f4c28956c5b1fd253a26109b5c9f5b0f8dd43290733d26ad571cc'
+  WRAPPER_ARTIFACT: '15212787070'
+  WRAPPER_ARCHIVE: 'sha256:9a7610bad71a333f3eba4a020438a6e8dde7184e2b68baba20bf99d013a6e25d'
+  WRAPPER_SHA256: '62d5bec36b2145946721f7ad5e203f0f22099ee15e38380cd84a92f1018055e7'
+  GOTOOLCHAIN: local
+  GOWORK: 'off'
+  GIT_TERMINAL_PROMPT: '0'
+  GIT_CONFIG_COUNT: '2'
+  GIT_CONFIG_KEY_0: url.https://github.com/.insteadOf
+  GIT_CONFIG_VALUE_0: 'ssh://git@github.com/'
+  GIT_CONFIG_KEY_1: url.https://github.com/.insteadOf
+  GIT_CONFIG_VALUE_1: 'git@github.com:'
+  RAYON_NUM_THREADS: '4'
+  ZKM_IMM_WRAP_VK: 'false'
+
+jobs:
+  tools:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 6
+    steps:
+      - name: Check proving tool provenance
+        timeout-minutes: 5
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          endpoint="repos/$GITHUB_REPOSITORY/actions"
+          check_artifact() {
+            local run="$1" head="$2" artifact="$3" digest="$4" name="$5" max_bytes="$6"
+            gh api "$endpoint/artifacts/$artifact" | jq -e --arg head "$head" --arg digest "$digest" \
+              --arg name "$name" --argjson run "$run" --argjson max "$max_bytes" '
+              .workflow_run.id == $run and .workflow_run.head_sha == $head and .expired == false and
+              .name == $name and .digest == $digest and .size_in_bytes > 0 and .size_in_bytes <= $max'
+          }
+          gh api "$endpoint/runs/$CORE_TOOL_RUN/attempts/1/jobs" | jq -e --arg head "$CORE_TOOL_HEAD" '
+            any(.jobs[]; .name == "statement" and .head_sha == $head and .conclusion == "success")'
+          gh api "$endpoint/runs/$TOOLS_RUN/attempts/1" | jq -e --arg head "$TOOLS_HEAD" '
+            .head_sha == $head and .run_attempt == 1 and .conclusion == "success"'
+          check_artifact "$CORE_TOOL_RUN" "$CORE_TOOL_HEAD" "$CORE_TOOL_ARTIFACT" "$CORE_TOOL_ARCHIVE" checked-zeno-proposal-prover 134217728
+          check_artifact "$TOOLS_RUN" "$TOOLS_HEAD" "$COMPRESSOR_ARTIFACT" "$COMPRESSOR_ARCHIVE" zeno-live-validity-compressor 268436480
+          check_artifact "$TOOLS_RUN" "$TOOLS_HEAD" "$WRAPPER_ARTIFACT" "$WRAPPER_ARCHIVE" zeno-live-validity-wrapper 268436480
+
+  release:
+    name: Isolated devnet and regtest
+    needs: tools
+    runs-on: ubuntu-24.04
+    timeout-minutes: 350
+    env:
+      PYTHONPATH: ${{ github.workspace }}:${{ github.workspace }}/research/zeno-contract-authorization
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
+        with:
+          go-version: '1.26.0'
+          cache: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24.17.0
+          package-manager-cache: false
+
+      - name: Allocate the source and regtest workspace
+        shell: bash
+        run: |
+          umask 077
+          work="$(mktemp -d "$RUNNER_TEMP/zeno-validity-release.XXXXXX")"
+          printf 'VALIDITY_WORK=%s\n' "$work" >> "$GITHUB_ENV"
+
+      - name: Fund and register the fixed regtest output
+        timeout-minutes: 6
+        shell: bash
+        run: |
+          bash .github/scripts/install-bitcoind.sh "$VALIDITY_WORK"
+          python3 -B research/zeno-validity-devnet/regtest_release.py prepare "$VALIDITY_WORK" "$VALIDITY_WORK/bitcoind"
+
+      - name: Capture the three pending calls and verify the selected target
+        timeout-minutes: 75
+        shell: bash
+        run: |
+          umask 077
+          timeout --kill-after=60s 67m bash research/zeno-validity-devnet/run-devnet.sh capture-release "$VALIDITY_WORK"
+          python3 -B research/zeno-validity-devnet/regtest_release.py check-pending "$VALIDITY_WORK" "$VALIDITY_WORK/bitcoind"
+          (
+            cd "$VALIDITY_WORK"
+            sha256sum pending.json proposal.json statement.json authorization.json > capture.sha256
+            cat capture.sha256
+          )
+
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: zeno-validity-release-proposal
+          path: |
+            ${{ env.VALIDITY_WORK }}/pending.json
+            ${{ env.VALIDITY_WORK }}/proposal.json
+            ${{ env.VALIDITY_WORK }}/statement.json
+            ${{ env.VALIDITY_WORK }}/authorization.json
+            ${{ env.VALIDITY_WORK }}/capture.sha256
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Verify the persisted devnet before proving
+        timeout-minutes: 19
+        shell: bash
+        run: |
+          timeout --kill-after=30s 17m bash research/zeno-validity-devnet/run-devnet.sh preflight-release "$VALIDITY_WORK"
+
+      - name: Wait for the same-run Groth16 artifact
+        id: wrapped
+        timeout-minutes: 292
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash research/zeno-validity-devnet/wait-release-artifact.sh groth16
+      - name: Download the selected Groth16 evidence
+        uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
+        with:
+          artifact-ids: ${{ steps.wrapped.outputs.id }}
+          path: ${{ env.VALIDITY_WORK }}
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ github.run_id }}
+
+      - name: Confirm the valid devnet batch and observe eligibility
+        timeout-minutes: 36
+        shell: bash
+        run: |
+          (
+            cd "$VALIDITY_WORK"
+            sha256sum --check --strict capture.sha256
+            sha256sum --check --strict fixture.sha256
+          )
+          timeout --kill-after=30s 34m bash research/zeno-validity-devnet/run-devnet.sh resume-release "$VALIDITY_WORK"
+
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: zeno-validity-release-acceptance
+          path: ${{ env.VALIDITY_WORK }}/acceptance.json
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Verify the state proofs and confirm the exact regtest transaction
+        timeout-minutes: 3
+        shell: bash
+        run: |
+          python3 -B research/zeno-validity-devnet/regtest_release.py release "$VALIDITY_WORK" "$VALIDITY_WORK/bitcoind"
+          (
+            cd "$VALIDITY_WORK"
+            sha256sum acceptance.json fixture.json release.json > release.sha256
+            cat release.sha256
+            printf 'VALIDITY_RELEASE_RECORD '
+            cat release.json
+          )
+
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: zeno-validity-release-result
+          path: |
+            ${{ env.VALIDITY_WORK }}/release.json
+            ${{ env.VALIDITY_WORK }}/release.sha256
+          if-no-files-found: error
+          retention-days: 90
+
+  core:
+    needs: tools
+    runs-on: ubuntu-24.04
+    timeout-minutes: 215
+    outputs:
+      sha256: ${{ steps.core.outputs.sha256 }}
+      journal: ${{ steps.statement.outputs.journal }}
+    env:
+      ELEMENT_THRESHOLD: '55000000'
+      TRACE_GEN_WORKERS: '1'
+      CHECKPOINTS_CHANNEL_CAPACITY: '2'
+      RECORDS_AND_TRACES_CHANNEL_CAPACITY: '1'
+      RUST_LOG: zkm_core_machine::utils::prove=info,zkm_prover=info
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Allocate the dedicated Core workspace
+        shell: bash
+        run: |
+          umask 077
+          work="$(mktemp -d "$RUNNER_TEMP/zeno-validity-release-core.XXXXXX")"
+          printf 'VALIDITY_WORK=%s\n' "$work" >> "$GITHUB_ENV"
+
+      - name: Wait for the qualified proposal from the same run
+        id: proposal
+        timeout-minutes: 77
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash research/zeno-validity-devnet/wait-release-artifact.sh proposal
+      - name: Download the selected proposal
+        uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
+        with:
+          artifact-ids: ${{ steps.proposal.outputs.id }}
+          path: ${{ env.VALIDITY_WORK }}
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ github.run_id }}
+
+      - name: Download the source-pinned Core prover
+        uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
+        with:
+          artifact-ids: ${{ env.CORE_TOOL_ARTIFACT }}
+          path: ${{ env.VALIDITY_WORK }}
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ env.CORE_TOOL_RUN }}
+
+      - name: Bind the Core prover to the proposed statement
+        id: statement
+        shell: bash
+        run: |
+          cd "$VALIDITY_WORK"
+          sha256sum --check --strict capture.sha256
+          journal="$(jq -er '.journal | select(test("^[a-f0-9]{64}$"))' statement.json)"
+          {
+            printf 'PROPOSAL_SHA256=%s\n' "$(sha256sum < proposal.json | cut -d ' ' -f 1)"
+            printf 'STATEMENT_SHA256=%s\n' "$(sha256sum < statement.json | cut -d ' ' -f 1)"
+            printf 'JOURNAL=%s\n' "$journal"
+          } >> "$GITHUB_ENV"
+          printf 'journal=%s\n' "$journal" >> "$GITHUB_OUTPUT"
+      - name: Generate and verify the Core proof
+        id: core
+        shell: bash
+        run: bash research/zeno-validity-devnet/prove.sh core "$VALIDITY_WORK"
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: zeno-validity-release-core
+          path: ${{ env.VALIDITY_WORK }}/proof.bin
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 30
+
+  compress:
+    needs: core
+    runs-on: ubuntu-24.04
+    timeout-minutes: 190
+    outputs:
+      sha256: ${{ steps.compress.outputs.sha256 }}
+    env:
+      JOURNAL: ${{ needs.core.outputs.journal }}
+      INPUT_SHA256: ${{ needs.core.outputs.sha256 }}
+      PROVER_CORE_CACHE_SIZE: '4'
+      FIX_RECURSION_SHAPES: 'true'
+      RUST_LOG: info
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Allocate recursion workspace
+        shell: bash
+        run: |
+          umask 077
+          work="$(mktemp -d "$RUNNER_TEMP/zeno-live-recursion.XXXXXX")"
+          printf 'VALIDITY_WORK=%s\n' "$work" >> "$GITHUB_ENV"
+      - uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
+        with:
+          name: zeno-validity-release-core
+          path: ${{ env.VALIDITY_WORK }}
+      - uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
+        with:
+          artifact-ids: ${{ env.COMPRESSOR_ARTIFACT }}
+          path: ${{ env.VALIDITY_WORK }}
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ env.TOOLS_RUN }}
+      - name: Compress and verify the same Core proof
+        id: compress
+        shell: bash
+        run: bash research/zeno-validity-devnet/prove.sh compress "$VALIDITY_WORK"
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: zeno-validity-release-compressed
+          path: ${{ env.VALIDITY_WORK }}/compressed.bin
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 30
+
+  outer:
+    needs: [core, compress]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 135
+    outputs:
+      sha256: ${{ steps.outer.outputs.sha256 }}
+    env:
+      JOURNAL: ${{ needs.core.outputs.journal }}
+      INPUT_SHA256: ${{ needs.compress.outputs.sha256 }}
+      RUST_LOG: info
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Allocate outer proof workspace
+        shell: bash
+        run: |
+          umask 077
+          work="$(mktemp -d "$RUNNER_TEMP/zeno-live-outer.XXXXXX")"
+          printf 'VALIDITY_WORK=%s\n' "$work" >> "$GITHUB_ENV"
+      - uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
+        with:
+          name: zeno-validity-release-compressed
+          path: ${{ env.VALIDITY_WORK }}
+      - uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
+        with:
+          artifact-ids: ${{ env.WRAPPER_ARTIFACT }}
+          path: ${{ env.VALIDITY_WORK }}
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ env.TOOLS_RUN }}
+      - name: Construct and verify the BN254 outer proof
+        id: outer
+        shell: bash
+        run: bash research/zeno-validity-devnet/prove.sh outer "$VALIDITY_WORK"
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: zeno-validity-release-outer
+          path: ${{ env.VALIDITY_WORK }}/outer.bin
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 30
+
+  groth16:
+    needs: [core, outer]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 215
+    outputs:
+      sha256: ${{ steps.groth16.outputs.sha256 }}
+    env:
+      JOURNAL: ${{ needs.core.outputs.journal }}
+      INPUT_SHA256: ${{ needs.outer.outputs.sha256 }}
+      GOMAXPROCS: '4'
+      GOGC: '60'
+      RUST_LOG: info
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Reserve circuit workspace and spill allocation
+        shell: bash
+        run: |
+          umask 077
+          base="$RUNNER_TEMP"
+          free_bytes="$(df -PB1 "$base" | awk 'NR == 2 { print $4 }')"
+          if [[ -d /mnt && -w /mnt ]]; then
+            mounted="$(df -PB1 /mnt | awk 'NR == 2 { print $4 }')"
+            if [[ "$mounted" -gt "$free_bytes" ]]; then
+              base=/mnt
+              free_bytes="$mounted"
+            fi
+          fi
+          test "$free_bytes" -ge "$((42 * 1024 * 1024 * 1024))"
+          work="$(mktemp -d "$base/zeno-live-groth16.XXXXXX")"
+          printf 'VALIDITY_WORK=%s\n' "$work" >> "$GITHUB_ENV"
+      - uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
+        with:
+          name: zeno-validity-release-outer
+          path: ${{ env.VALIDITY_WORK }}
+      - uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
+        with:
+          artifact-ids: ${{ env.WRAPPER_ARTIFACT }}
+          path: ${{ env.VALIDITY_WORK }}
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ env.TOOLS_RUN }}
+      - name: Generate and verify the Groth16 proof for the same journal
+        id: groth16
+        shell: bash
+        run: |
+          bash research/zeno-validity-devnet/prove.sh groth16 "$VALIDITY_WORK"
+          (
+            cd "$VALIDITY_WORK"
+            sha256sum fixture.json > fixture.sha256
+          )
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: zeno-validity-release-groth16
+          path: |
+            ${{ env.VALIDITY_WORK }}/fixture.json
+            ${{ env.VALIDITY_WORK }}/fixture.sha256
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 90
