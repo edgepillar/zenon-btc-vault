@@ -2,7 +2,7 @@ name: Zeno native checkpoint qualification
 
 on:
   push:
-    branches: [verify-native-release-checkpoint]
+    branches: [verify-native-release-checkpoint, replay-native-checkpoint-evidence]
     paths:
       - .github/workflows/zeno-native-checkpoint.yml
       - research/zeno-native-checkpoint/**
@@ -44,6 +44,11 @@ jobs:
   checkpoint:
     runs-on: ubuntu-24.04
     timeout-minutes: 49
+    outputs:
+      archive_id: ${{ steps.upload.outputs.artifact-id }}
+      archive_digest: ${{ steps.upload.outputs.artifact-digest }}
+      acceptance_sha256: ${{ steps.capture.outputs.acceptance_sha256 }}
+      checkpoint_sha256: ${{ steps.capture.outputs.checkpoint_sha256 }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -111,6 +116,7 @@ jobs:
           run-id: ${{ env.PROOF_RUN }}
 
       - name: Observe the proven batch and verify its native checkpoint
+        id: capture
         shell: bash
         run: |
           work="$VALIDITY_WORK"
@@ -120,7 +126,10 @@ jobs:
           test "$(jq -er '.journal' statement.json)" = "$JOURNAL"
           test "$(jq -er '.journal' fixture.json)" = "$JOURNAL"
           timeout --kill-after=30s 43m bash "$GITHUB_WORKSPACE/research/zeno-validity-devnet/run-devnet.sh" submit-native "$work"
-          sha256sum acceptance.json native-checkpoint.json > native.sha256
+          acceptance_sha="$(sha256sum acceptance.json | cut -d ' ' -f 1)"
+          checkpoint_sha="$(sha256sum native-checkpoint.json | cut -d ' ' -f 1)"
+          printf '%s  %s\n' "$acceptance_sha" acceptance.json "$checkpoint_sha" native-checkpoint.json > native.sha256
+          printf 'acceptance_sha256=%s\ncheckpoint_sha256=%s\n' "$acceptance_sha" "$checkpoint_sha" >> "$GITHUB_OUTPUT"
           cat native.sha256
           printf '## Native devnet checkpoint\n\n' >> "$GITHUB_STEP_SUMMARY"
           jq -r '
@@ -131,11 +140,94 @@ jobs:
           ' native-checkpoint.json >> "$GITHUB_STEP_SUMMARY"
 
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        id: upload
         with:
           name: zeno-native-checkpoint
           path: |
             ${{ env.VALIDITY_WORK }}/acceptance.json
             ${{ env.VALIDITY_WORK }}/native-checkpoint.json
             ${{ env.VALIDITY_WORK }}/native.sha256
+          if-no-files-found: error
+          retention-days: 90
+
+  replay:
+    needs: checkpoint
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    env:
+      ARCHIVE_ID: ${{ needs.checkpoint.outputs.archive_id }}
+      ARCHIVE_DIGEST: ${{ needs.checkpoint.outputs.archive_digest }}
+      ACCEPTANCE_SHA256: ${{ needs.checkpoint.outputs.acceptance_sha256 }}
+      CHECKPOINT_RECORD_SHA256: ${{ needs.checkpoint.outputs.checkpoint_sha256 }}
+      PYTHONPATH: ${{ github.workspace }}:${{ github.workspace }}/research/zeno-validity-devnet:${{ github.workspace }}/research/zeno-contract-authorization
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
+        with:
+          go-version: '1.26.0'
+          cache: false
+
+      - name: Bind the witness archive to the capture job
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          test "${#ACCEPTANCE_SHA256}" -eq 64
+          test "${#CHECKPOINT_RECORD_SHA256}" -eq 64
+          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$ARCHIVE_ID" |
+            jq -e --arg head "$GITHUB_SHA" --argjson run "$GITHUB_RUN_ID" --arg digest "${ARCHIVE_DIGEST#sha256:}" '
+              .workflow_run.id == $run and .workflow_run.head_sha == $head and .expired == false and
+              .name == "zeno-native-checkpoint" and .digest == ("sha256:" + $digest) and
+              .size_in_bytes > 0 and .size_in_bytes <= 524288'
+          umask 077
+          work="$(mktemp -d "$RUNNER_TEMP/zeno-native-replay.XXXXXX")"
+          printf 'REPLAY_WORK=%s\n' "$work" >> "$GITHUB_ENV"
+
+      - uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
+        with:
+          artifact-ids: ${{ env.ARCHIVE_ID }}
+          path: ${{ env.REPLAY_WORK }}
+      - uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
+        with:
+          artifact-ids: ${{ env.PROPOSAL_ARTIFACT }}
+          path: ${{ env.REPLAY_WORK }}
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ env.CAPTURE_RUN }}
+      - uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
+        with:
+          artifact-ids: ${{ env.FIXTURE_ARTIFACT }}
+          path: ${{ env.REPLAY_WORK }}
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ env.PROOF_RUN }}
+
+      - name: Replay the signatures and Settlement state without a running devnet
+        shell: bash
+        env:
+          GOPROXY: 'off'
+          GOSUMDB: 'off'
+        run: |
+          cd "$REPLAY_WORK"
+          printf '%s  %s\n' "$ACCEPTANCE_SHA256" acceptance.json "$CHECKPOINT_RECORD_SHA256" native-checkpoint.json \
+            "$PROPOSAL_SHA256" proposal.json "$PENDING_SHA256" pending.json \
+            "$STATEMENT_SHA256" statement.json "$FIXTURE_SHA256" fixture.json | sha256sum --check --strict
+          research="$GITHUB_WORKSPACE/research/zeno-native-checkpoint"
+          go build -trimpath -o verify-signatures "$research/verify-signatures.go"
+          python3 -B "$research/native_checkpoint.py" "$REPLAY_WORK" --replay "$REPLAY_WORK/verify-signatures"
+          printf '## Offline checkpoint replay\n\n' >> "$GITHUB_STEP_SUMMARY"
+          jq -r '
+            "- Momentum \(.selected.height) through \(.cut.height)",
+            "- Verified \(.headerSignatures) header signatures and \(.cutStatePaths) cut state paths",
+            "- \(.controls | join(", "))"
+          ' native-replay.json >> "$GITHUB_STEP_SUMMARY"
+          sha256sum native-replay.json
+
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: zeno-native-checkpoint-replay
+          path: ${{ env.REPLAY_WORK }}/native-replay.json
           if-no-files-found: error
           retention-days: 90

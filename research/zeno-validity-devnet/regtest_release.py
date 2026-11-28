@@ -46,11 +46,25 @@ def digest32(encoded):
     return value
 
 
-def settlement_key(key):
+def zenon_address_bytes(text):
+    require(len(text) == 40 and text.startswith("z1"), "Expected a Zenon address")
+    digits = [BECH32.index(character) for character in text[2:]]
+    checksum = 1
+    for digit in (3, 0, 26, *digits):
+        top = checksum >> 25
+        checksum = ((checksum & 0x1FFFFFF) << 5) ^ digit
+        for bit, generator in enumerate((0x3B6A57B2, 0x26508E6D, 0x1EA119FA, 0x3D4233DD, 0x2A1462B3)):
+            if top & (1 << bit):
+                checksum ^= generator
+    require(checksum == 1, "Zenon address checksum differs")
     address = 0
-    for character in SETTLEMENT_ADDRESS[2:-6]:
-        address = (address << 5) | BECH32.index(character)
-    return bytes([3]) + address.to_bytes(20, "big") + bytes([4]) + key
+    for digit in digits[:-6]:
+        address = (address << 5) | digit
+    return address.to_bytes(20, "big")
+
+
+def settlement_key(key):
+    return b"\x03" + zenon_address_bytes(SETTLEMENT_ADDRESS) + b"\x04" + key
 
 
 def check_proof(path, root, proof, value):

@@ -9,7 +9,7 @@ import subprocess
 import sys
 
 from regtest import RegtestError, require
-from regtest_release import BECH32, GUEST_KEY, MODULE, b64, check_proof, digest32, read_leaf, word
+from regtest_release import GUEST_KEY, MODULE, b64, check_proof, digest32, read_leaf, word, zenon_address_bytes
 from withdrawal_authorization import REGTEST_GENESIS
 
 
@@ -65,23 +65,6 @@ def check_checkpoint_controls(acceptance, expected, deadline):
             raise RegtestError("The checkpoint policy accepted a mismatched view")
 
 
-def sender_bytes(text):
-    require(len(text) == 40 and text.startswith("z1"), "Expected a Zenon address")
-    digits = [BECH32.index(character) for character in text[2:]]
-    checksum = 1
-    for digit in (3, 0, 26, *digits):
-        top = checksum >> 25
-        checksum = ((checksum & 0x1FFFFFF) << 5) ^ digit
-        for bit, generator in enumerate((0x3B6A57B2, 0x26508E6D, 0x1EA119FA, 0x3D4233DD, 0x2A1462B3)):
-            if top & (1 << bit):
-                checksum ^= generator
-    require(checksum == 1, "Zenon address checksum differs")
-    address = 0
-    for digit in digits[:-6]:
-        address = (address << 5) | digit
-    return address.to_bytes(20, "big")
-
-
 def derive_journal(witness, pending, acceptance, commitment):
     require(witness["schema"] == 1 and witness["firstOrdinal"] == 4 and len(witness["inputs"]) == 3,
             "Unexpected proposal witness profile")
@@ -110,7 +93,7 @@ def derive_journal(witness, pending, acceptance, commitment):
         body = raw[141:]
         require(len(body) == int.from_bytes(raw[137:141], "big") and ctx["MomentumHeight"] > 0 and ctx["MomentumTime"] > 0,
                 "Invalid admitted call encoding")
-        call = (pack(">QQ", ordinal, index) + source_hash + sender_bytes(ctx["L1Sender"]) +
+        call = (pack(">QQ", ordinal, index) + source_hash + zenon_address_bytes(ctx["L1Sender"]) +
                 pack(">QQ", ctx["MomentumHeight"], ctx["MomentumTime"]) + digest32(ctx["MomentumHash"]) +
                 contract + raw[65:73] + pack(">Q", len(body)) + body)
         end = sha256(b"zeno-devnet-validity-call-v1\x00" + end + call).digest()

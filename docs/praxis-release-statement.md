@@ -28,6 +28,11 @@ authenticated registration record. The ciphertext digest is computed after
 the instance is fixed. At release, check the retrieved ciphertext and the
 decrypted transaction against their registered digests.
 
+The encryptor handles the signed transaction in plaintext. The funded fixture
+also stores the signed transaction in the regtest holder's registration.
+An encrypted qualification needs to document which parties saw the signed
+bytes and who can publish them before the witness exists.
+
 A release witness supplies the future batch, its validity proof and an
 authenticated source checkpoint. The release verifier must bind the exact
 batch and target to that checkpoint, check the stored withdrawal deadline,
@@ -37,13 +42,24 @@ belong to that witness.
 
 The current devnet selector reads two pinned full nodes and checks elected
 producers and the branch they store. A portable verifier needs evidence the
-circuit can check. An initial test can use explicitly identified checkpoint
+circuit can check. The version 2 capture retains the signed Momentum
+preimages and Settlement paths for offline replay. An initial release
+statement can use explicitly identified checkpoint
 authorities with a fixed verification policy. Early release in that test
 depends on those authorities withholding their authorization until the
 checkpoint is eligible. An independently verified
 version needs a source-chain trust anchor and proofs for authorized producers,
 branch selection and eligible Settlement state. Each variant carries its
 own trust assumptions. [Devnet checkpoint qualification](../research/zeno-native-checkpoint/README.md)
+
+For independent election replay, authenticate the historical proof Momentum
+that the node selects at the election cutoff. The election traverses the
+active Pillar registry and the full delegation set, then reads each backer's
+ZNN balance at that Momentum. A verifier needs a complete committed election
+input. Individual membership proofs establish the presence of supplied
+entries and leave completeness open.
+[Historical election selection](https://github.com/digitalSloth/go-zenon/blob/2835c436b197fece5c76adf4ba8dc1decca2e3ea/consensus/election.go#L101-L120) ·
+[Delegation snapshot](https://github.com/digitalSloth/go-zenon/blob/2835c436b197fece5c76adf4ba8dc1decca2e3ea/chain/momentum/embedded.go#L13-L109)
 
 ## Bitcoin cutoff and reconciliation
 
@@ -70,8 +86,16 @@ assumes an honest setup. [Ziren Groth16 build](https://github.com/ProjectZKM/Zir
 
 At the preprint's stated 100-bit parameters, the authors estimate a 7.88 GiB
 ciphertext, about 20 billion base-field multiplications to encrypt and
-8.6 billion on average to decrypt. Measure the circuit encoding, actual
-streamed ciphertext, encryption, decryption and retrieval for one synthetic
-registration before choosing an implementation. Curve library throughput
-alone gives a lower-level measurement for these estimates.
-[Praxis v1, Section 6.3](https://arxiv.org/pdf/2611.28552v1)
+8.6 billion on average to decrypt. Those estimates use a Boolean quadratic
+system for an SP1 6.1.0 verification key. Start by checking the exact release
+key, public instance and proof with both a native verifier and the Boolean
+encoding, including refusal against a different public instance. Record the
+constraint count of that encoding before transferring the cost estimates to
+this system. [Praxis v1, Sections 6.1 and 6.3](https://arxiv.org/pdf/2611.28552v1)
+
+For one synthetic registration, record streamed ciphertext bytes, peak RAM,
+encryption time, retrieval throughput and decryption latency. Transferring
+7.88 GiB over a steady 100 Mbit/s link alone takes at least 11 minutes before
+protocol overhead. The refund budget also needs time for a new release proof
+and Bitcoin confirmation. Use a tail latency for the decryption budget
+because the search cost varies across ciphertexts.

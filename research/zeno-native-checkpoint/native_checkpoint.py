@@ -3,16 +3,19 @@
 import argparse
 import base64
 from copy import deepcopy
-from hashlib import sha256
+from hashlib import sha256, sha3_256
 import json
 from pathlib import Path
 from struct import pack
+import subprocess
 import time
 from urllib.error import URLError
 from urllib.request import ProxyHandler, Request, build_opener
 
 from regtest import RegtestError, require
-from regtest_release import b64, digest32, read_json, read_leaf, release, settlement_key, verify_eligible_batch, write_private
+from regtest_release import (
+    b64, digest32, read_json, read_leaf, release, settlement_key, verify_eligible_batch, write_private, zenon_address_bytes,
+)
 
 
 NODE_REVISION = "2835c436b197fece5c76adf4ba8dc1decca2e3ea"
@@ -21,6 +24,12 @@ NODES = {"producer": 35991, "rpc": 35997}
 SUCCESSORS = 30
 MAX_REPLAY_LAG = 60
 MAX_RPC = 64 * 1024
+MAX_RECORD = 256 * 1024
+SETTLEMENT_KEYS = {
+    "batch": b"\x02" + pack(">IQ", 1, 4),
+    "cursor": b"\x03" + pack(">I", 1),
+    "anchor": b"\xf1" + pack(">I", 1),
+}
 OPENER = build_opener(ProxyHandler({}))
 
 
@@ -49,6 +58,10 @@ def checkpoint_fields(header):
     return header["height"], header["hash"], header["stateRoot"]
 
 
+def checkpoint_summary(header):
+    return {field: header[field] for field in ("height", "hash", "previousHash", "stateRoot", "producer")}
+
+
 def validate_view(view, eligible):
     require(view["chainId"] == 69 and view["genesis"] == GENESIS, "Unexpected devnet network")
     height = eligible["height"]
@@ -63,7 +76,9 @@ def validate_view(view, eligible):
         digest32(header["hash"])
         digest32(header["previousHash"])
         digest32(header["stateRoot"])
-        require(isinstance(header["producer"], str) and header["producer"].startswith("z1"), "Native producer is missing")
+        key = b64(header["publicKey"])
+        require(len(key) == 32 and zenon_address_bytes(header["producer"]) == b"\x00" + sha3_256(key).digest()[:19],
+                "Native producer does not match its public key")
         if offset:
             require(header["previousHash"] == headers[offset - 1]["hash"], "Native segment is not linked")
     require(view["frontierHeight"] != headers[-1]["height"] or view["frontierHash"] == headers[-1]["hash"],
@@ -78,36 +93,39 @@ def agree(views, eligible):
     return producer
 
 
-def check_cut_state(port, header, eligible):
+def verify_cut_state(proven, header, eligible):
+    require(proven["root"] == header["stateRoot"], "Settlement proof does not use the selected branch root")
+    for label, key in SETTLEMENT_KEYS.items():
+        expected = read_leaf(eligible, label, key)
+        require(expected is not None and read_leaf(proven, label, key) == expected,
+                "Settlement state changed before the native checkpoint")
+
+
+def capture_cut_state(port, header, eligible):
     proven = {"root": header["stateRoot"]}
-    keys = {
-        "batch": b"\x02" + pack(">IQ", 1, 4),
-        "cursor": b"\x03" + pack(">I", 1),
-        "anchor": b"\xf1" + pack(">I", 1),
-    }
-    for label, key in keys.items():
+    for label, key in SETTLEMENT_KEYS.items():
         tree_key = settlement_key(key)
         result = rpc(port, "ledger.getProof", header["height"], base64.b64encode(tree_key).decode("ascii"))
         require(result["root"] == proven["root"], "Settlement proof does not use the selected branch root")
         proven[label] = {"key": key.hex(), "treeKey": tree_key.hex(), "value": result["value"], "proof": result["proof"]}
-        require(read_leaf(proven, label, key) == b64(eligible[label]["value"]),
-                "Settlement state changed before the native checkpoint")
+    verify_cut_state(proven, header, eligible)
+    return proven
 
 
 def select_checkpoint(eligible):
     views = {name: rpc(port, "ledger.getVaultCheckpoint", eligible["height"]) for name, port in NODES.items()}
     headers = agree(views, eligible)
-    for port in NODES.values():
-        check_cut_state(port, headers[-1], eligible)
+    cut = headers[-1]
     return {
-        "schema": 1,
+        "schema": 2,
         "nodeRevision": NODE_REVISION,
         "chainId": 69,
         "genesis": GENESIS,
         "requiredSuccessors": SUCCESSORS,
-        "selected": headers[0],
-        "cut": headers[-1],
+        "selected": checkpoint_summary(headers[0]),
+        "cut": checkpoint_summary(cut),
         "headers": headers,
+        "cutState": {name: capture_cut_state(port, cut, eligible) for name, port in NODES.items()},
         "observedFrontiers": {
             name: {"height": view["frontierHeight"], "hash": view["frontierHash"]}
             for name, view in views.items()
@@ -156,7 +174,9 @@ def verify_conflicting_view_refusal(result, eligible):
 
 
 def retain_checkpoint(work, result):
-    write_private(work / "native-checkpoint.json", (json.dumps(result, separators=(",", ":")) + "\n").encode("ascii"))
+    payload = (json.dumps(result, separators=(",", ":")) + "\n").encode("ascii")
+    require(len(payload) <= MAX_RECORD, "Native checkpoint record exceeds its size limit")
+    write_private(work / "native-checkpoint.json", payload)
     print(f"NATIVE_CHECKPOINT {result['selected']['height']} {result['cut']['height']} {result['cut']['hash']}", flush=True)
 
 
@@ -167,10 +187,15 @@ def check_proposal_network(work):
     return pending
 
 
-def attest(work, *, run_controls):
+def eligible_checkpoint(work):
     pending = check_proposal_network(work)
     commitment = b64(read_json(work / "proposal.json", 49_152)["commitment"])
     _, eligible = verify_eligible_batch(work, commitment, pending)
+    return eligible
+
+
+def attest(work, *, run_controls):
+    eligible = eligible_checkpoint(work)
     if run_controls:
         verify_early_refusal(eligible)
     wait_for_cut(eligible["height"] + SUCCESSORS)
@@ -179,6 +204,47 @@ def attest(work, *, run_controls):
         verify_conflicting_view_refusal(result, eligible)
         result["controls"] = ["early-native-view-refused", "conflicting-native-view-refused"]
     retain_checkpoint(work, result)
+
+
+def replay_checkpoint(work, verifier):
+    eligible = eligible_checkpoint(work)
+    record = read_json(work / "native-checkpoint.json", MAX_RECORD)
+    require((record["schema"], record["nodeRevision"], record["requiredSuccessors"]) == (2, NODE_REVISION, SUCCESSORS),
+            "Unexpected native checkpoint record")
+    require(set(record["observedFrontiers"]) == set(record["cutState"]) == set(NODES), "Expected both node records")
+    headers = record["headers"]
+    for name, frontier in record["observedFrontiers"].items():
+        validate_view({"chainId": record["chainId"], "genesis": record["genesis"], "headers": headers,
+                       "frontierHeight": frontier["height"], "frontierHash": frontier["hash"]}, eligible)
+        verify_cut_state(record["cutState"][name], headers[-1], eligible)
+    selected, cut = checkpoint_summary(headers[0]), checkpoint_summary(headers[-1])
+    require(record["selected"] == selected and record["cut"] == cut, "Native summary differs from its signed headers")
+
+    def check_signatures(segment):
+        payload = json.dumps({"headers": segment}, separators=(",", ":")).encode("ascii")
+        return subprocess.run([str(verifier)], input=payload, capture_output=True, timeout=10)
+
+    require(check_signatures(headers).returncode == 0, "Offline Momentum signature verification failed")
+    changed = [{**headers[0], "signature": base64.b64encode(bytes(64)).decode("ascii")}, *headers[1:]]
+    rejected = check_signatures(changed)
+    require(rejected.returncode == 1 and rejected.stderr == b"Momentum signature differs\n",
+            "The signature control did not refuse the altered witness")
+
+    changed_state = deepcopy(record["cutState"]["rpc"])
+    value = b64(changed_state["batch"]["value"])
+    changed_state["batch"]["value"] = base64.b64encode(bytes([value[0] ^ 1]) + value[1:]).decode("ascii")
+    try:
+        verify_cut_state(changed_state, cut, eligible)
+    except RegtestError as exc:
+        require(str(exc) == "State proof leaf differs", "The state proof control refused for an unexpected reason")
+    else:
+        raise RegtestError("The state proof control accepted a different batch")
+
+    result = {"schema": 1, "selected": selected, "cut": cut, "headerSignatures": len(headers),
+              "cutStatePaths": len(SETTLEMENT_KEYS) * len(NODES),
+              "controls": ["altered signature refused", "altered batch leaf refused"]}
+    write_private(work / "native-replay.json", (json.dumps(result, separators=(",", ":")) + "\n").encode("ascii"))
+    print(f"Verified {result['headerSignatures']} Momentum signatures and {result['cutStatePaths']} cut state paths")
 
 
 def release_after_checkpoint(work, bitcoind):
@@ -201,15 +267,18 @@ def main():
     modes.add_argument("--check-genesis", action="store_true")
     modes.add_argument("--check-views", action="store_true")
     modes.add_argument("--bitcoind", type=Path)
+    modes.add_argument("--replay", type=Path)
     args = parser.parse_args()
     try:
         if args.check_genesis:
             check_proposal_network(args.work)
+        elif args.replay is not None:
+            replay_checkpoint(args.work, args.replay)
         elif args.bitcoind is not None:
             release_after_checkpoint(args.work, args.bitcoind)
         else:
             attest(args.work, run_controls=args.check_views)
-    except (RegtestError, OSError, ValueError, KeyError, TypeError) as exc:
+    except (RegtestError, OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as exc:
         detail = str(exc) if isinstance(exc, RegtestError) else type(exc).__name__
         parser.exit(1, f"Native checkpoint verification failed: {detail}\n")
 

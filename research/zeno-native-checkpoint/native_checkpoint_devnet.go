@@ -6,6 +6,7 @@ import (
 	"errors"
 
 	"github.com/zenon-network/go-zenon/chain/nom"
+	"github.com/zenon-network/go-zenon/common"
 	"github.com/zenon-network/go-zenon/common/types"
 	"github.com/zenon-network/go-zenon/verifier"
 )
@@ -22,6 +23,9 @@ type vaultHeader struct {
 	PreviousHash types.Hash    `json:"previousHash"`
 	StateRoot    types.Hash    `json:"stateRoot"`
 	Producer     types.Address `json:"producer"`
+	HashPreimage []byte        `json:"hashPreimage"`
+	PublicKey    []byte        `json:"publicKey"`
+	Signature    []byte        `json:"signature"`
 }
 
 type vaultCheckpointView struct {
@@ -82,9 +86,28 @@ func (l *LedgerApi) GetVaultCheckpoint(height uint64) (*vaultCheckpointView, err
 		if err != nil || !elected {
 			return nil, errors.New("vault checkpoint producer is not authorized by the parent state")
 		}
+		// The v3 hash preimage carries the content and data commitments without
+		// requiring the corresponding transactions in the offline witness.
+		preimage := common.JoinBytes(
+			common.Uint64ToBytes(header.Version),
+			common.Uint64ToBytes(header.ChainIdentifier),
+			header.PreviousHash.Bytes(),
+			common.Uint64ToBytes(header.Height),
+			common.Uint64ToBytes(header.TimestampUnix),
+			types.NewHash(header.Data).Bytes(),
+			header.Content.Hash().Bytes(),
+			header.ChangesHash.Bytes(),
+			common.Uint64ToBytes(header.NextFusionPrice),
+			common.Uint64ToBytes(header.NextWorkPrice),
+			header.StateRoot.Bytes(),
+		)
+		if types.NewHash(preimage) != header.Hash {
+			return nil, errors.New("vault checkpoint hash preimage differs")
+		}
 		view.Headers = append(view.Headers, vaultHeader{
 			Height: header.Height, Hash: header.Hash, PreviousHash: header.PreviousHash,
 			StateRoot: header.StateRoot, Producer: header.Producer(),
+			HashPreimage: preimage, PublicKey: header.PublicKey, Signature: header.Signature,
 		})
 		parent = m
 	}

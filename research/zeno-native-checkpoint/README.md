@@ -34,6 +34,14 @@ height. This run used PR 13's demo authorization digest.
 [Run summary](https://github.com/edgepillar/zenon-btc-vault/actions/runs/46114229782#summary-140884312846) ·
 [Checkpoint record](https://github.com/edgepillar/zenon-btc-vault/actions/runs/46114229782/artifacts/15251645707)
 
+The workflow also retains the v3 hash preimages, public keys, signatures and
+both sets of Settlement paths in the version 2 checkpoint record. A
+separate runner binds that record to the capture job and verifies the
+signed Momentum chain and all six cut state paths using the archived batch
+evidence. Its controls refuse an altered signature and an altered batch
+leaf. Producer election is checked by the live nodes against their parent
+state.
+
 The [regtest release workflow](../../.github/workflows/zeno-validity-regtest-release.yml)
 uses the same selector on a new batch whose authorization binds a registered
 Bitcoin transaction. It rechecks the Bitcoin tip, refund window and
