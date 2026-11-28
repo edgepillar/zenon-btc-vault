@@ -1,0 +1,62 @@
+{
+  "repository": "edgepillar/zenon-btc-vault",
+  "source": "ac9e3c868c63c44528f28c241656782408750db3",
+  "run": 46082713518,
+  "attempt": 1,
+  "job": 140785191917,
+  "artifacts": [
+    {
+      "name": "zeno-validity-release-proposal",
+      "id": 15238493491,
+      "bytes": 7364,
+      "sha256": "4c908f273cc33e51c4ebaeb5ce16a1210f44f88ee10659a367b66e2fef6338dd"
+    },
+    {
+      "name": "zeno-validity-release-groth16",
+      "id": 15244437809,
+      "bytes": 1421,
+      "sha256": "bd34351cb819b75da19f205792a181ba267a1352132f609c0f0e430eac447599"
+    },
+    {
+      "name": "zeno-validity-release-acceptance",
+      "id": 15244812672,
+      "bytes": 6876,
+      "sha256": "05167320c163c450f3897bc1ce1e89ea43d34db1f016ede209d0c5e58027c245"
+    },
+    {
+      "name": "zeno-validity-release-result",
+      "id": 15245135382,
+      "bytes": 1186,
+      "sha256": "539b7d503c53aeae64a1c95f7adef1f2fed78cff92d526777c345eba66501c58"
+    }
+  ],
+  "files": {
+    "pending.json": "c7821899a49ff02aa76bd25a012a35982810034fd9751bef00fac4e258124d28",
+    "proposal.json": "75b9bfaeb66b5f669f87ce3e57ef3bad0ba9bf883bb6b9464f7aa23f0c85f482",
+    "statement.json": "c77949c58f316d56f510dd273ae0e488bb213367f7770b4360b354d2d2030716",
+    "authorization.json": "63d57da47a3a25f77c1d1fe1929d72d364b74165aaa319c673afe2d72bd46d01",
+    "fixture.json": "8a607544b60076189b0d2aae3c5401c91a6820f67638b5836a9417e78743a31c",
+    "acceptance.json": "4625b9db6284f24bb92ec1b2cab1c85c06acdc21d4928cd01014583b683513bb",
+    "release.json": "9c55b345fba3c395e92be21b794127536f680e0c931957e79d987ac43fdb4edb"
+  },
+  "checkpoints": {
+    "before": {
+      "height": 97,
+      "hash": "0f7d450806346b02a14cc15577b20288973fdea1a152221677a2a9d6b1519dec",
+      "root": "4b66eec1b3a8c8875ba8e647ebdbfd2dff489685c25f07d6995f5f6c604b4fcd"
+    },
+    "resumed": {
+      "height": 118,
+      "hash": "cf0184eb0803308309737a0cf6e1dce4dd68ed426c61ef2b8c8899b6af36b6f5"
+    },
+    "accepted": {
+      "height": 120,
+      "send": "108aff35b904c98918411483d95870215cfa8f6aae13bb75ab01dae3f9c1731b"
+    },
+    "eligible": {
+      "height": 149,
+      "hash": "cd646bbe9a5d65980100d966a45a09846b72d9440fb6f3ff5d2061080e8e09ce",
+      "root": "9552ae06dee5d8fe9915a83c71822949b870f27f1fa0130624b7a0ee700c44a4"
+    }
+  }
+}

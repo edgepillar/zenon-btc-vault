@@ -1,7 +1,7 @@
-"""Compare synthetic withdrawal records before returning a supplied transaction."""
+"""Match a synthetic withdrawal against a trusted release registration."""
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
 MAX_BITCOIN_SATS = 21_000_000 * 100_000_000
@@ -51,14 +51,23 @@ class Withdrawal:
             raise ReleaseRefused("recipient_script_pubkey must be nonempty lowercase hexadecimal bytes")
 
 
-def release_signed_transaction(
-    expected: Withdrawal, supplied: Withdrawal, signed_transaction: str
-) -> str:
-    """Return the supplied hex after field agreement and a hex syntax check."""
-    if type(expected) is not Withdrawal or type(supplied) is not Withdrawal:
-        raise ReleaseRefused("expected and supplied must be Withdrawal records")
-    if supplied != expected:
-        raise ReleaseRefused("supplied withdrawal does not match the expected withdrawal")
-    if type(signed_transaction) is not str or not _is_lowercase_hex(signed_transaction.lower()):
-        raise ReleaseRefused("signed_transaction must be nonempty hexadecimal bytes")
-    return signed_transaction
+@dataclass(frozen=True)
+class RegisteredRelease:
+    """Hold trusted setup data for the mock. Bitcoin validation belongs to setup."""
+
+    withdrawal: Withdrawal
+    signed_transaction: str = field(repr=False)
+
+    def __post_init__(self) -> None:
+        if type(self.withdrawal) is not Withdrawal:
+            raise ReleaseRefused("registration requires a Withdrawal record")
+        if type(self.signed_transaction) is not str or not _is_lowercase_hex(self.signed_transaction.lower()):
+            raise ReleaseRefused("signed_transaction must be nonempty hexadecimal bytes")
+
+    def release_signed_transaction(self, supplied: Withdrawal) -> str:
+        """Return the registered bytes for an exact withdrawal match."""
+        if type(supplied) is not Withdrawal:
+            raise ReleaseRefused("supplied withdrawal must be a Withdrawal record")
+        if supplied != self.withdrawal:
+            raise ReleaseRefused("supplied withdrawal does not match the registered withdrawal")
+        return self.signed_transaction
