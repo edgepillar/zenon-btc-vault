@@ -18,8 +18,8 @@ nodes=(pillar pillar2 pillar3 observer rpc)
 umask 077
 
 case "$mode" in
-  capture|capture-release) capture=true ;;
-  preflight|submit|submit-native|preflight-release|resume-release) capture=false ;;
+  capture|capture-release|capture-native-release) capture=true ;;
+  preflight|submit|submit-native|preflight-release|resume-release|resume-native-release) capture=false ;;
   *) exit 2 ;;
 esac
 test -n "${GITHUB_ACTIONS:-}" && test "$(uname -s)" = Linux
@@ -33,6 +33,11 @@ devnet_command() (
   timeout "$limit" npm exec --offline -- tsx flows/validity-submit.ts "$@"
 )
 
+checkpoint_command() {
+  PYTHONPATH="$(dirname "$research"):$source_dir:$research/zeno-contract-authorization" \
+    timeout 10m python3 -B "$research/zeno-native-checkpoint/native_checkpoint.py" "$work" "$@"
+}
+
 stop_owned_devnet() {
   local result=$?
   trap - EXIT
@@ -44,10 +49,13 @@ stop_owned_devnet() {
   exit "$result"
 }
 
-if [[ "$mode" = preflight-release || "$mode" = resume-release ]]; then
+if [[ "$mode" = preflight-release || "$mode" = resume-release || "$mode" = resume-native-release ]]; then
   test "$(git -C "$devnet" rev-parse HEAD)" = "$devnet_revision"
   test "$(git -C "$node" rev-parse HEAD)" = "$node_revision"
   test -s "$work/pending.json"
+  if [[ "$mode" = resume-native-release ]]; then
+    cmp "$research/zeno-native-checkpoint/native_checkpoint_devnet.go" "$node/rpc/api/native_checkpoint_devnet.go"
+  fi
   trap stop_owned_devnet EXIT
   timeout 4m "${compose[@]}" up -d --no-build --pull never "${nodes[@]}"
   timeout 10m python3 -B "$research/zeno-withdrawal/bootstrap.py"
@@ -55,6 +63,9 @@ if [[ "$mode" = preflight-release || "$mode" = resume-release ]]; then
     devnet_command 5m preflight "$work"
   else
     devnet_command 20m submit-release "$work"
+  fi
+  if [[ "$mode" = resume-native-release ]]; then
+    checkpoint_command --bitcoind "$work/bitcoind"
   fi
   exit
 fi
@@ -88,7 +99,7 @@ else
   pinned_checkout "$node" https://github.com/digitalSloth/go-zenon.git "$node_revision"
 fi
 python3 -B "$research/zeno-settlement-proof/prepare-node.py" "$node" "$recorded_key" "$guest_key"
-if [[ "$mode" = submit-native ]]; then
+if [[ "$mode" = submit-native || "$mode" = capture-native-release ]]; then
   cp "$research/zeno-native-checkpoint/native_checkpoint_devnet.go" "$node/rpc/api/"
 fi
 (
@@ -137,9 +148,12 @@ if [[ "$capture" = true ]]; then
   (
     cd "$devnet"
     args=("$work/vault_authorizer" "$work/pending.json")
-    if [[ "$mode" = capture-release ]]; then args+=("$work/target.hex"); fi
+    if [[ "$mode" = capture-release || "$mode" = capture-native-release ]]; then args+=("$work/target.hex"); fi
     timeout 24m npm exec --offline -- tsx flows/vault-authorizer.ts capture-pending "${args[@]}"
   )
+  if [[ "$mode" = capture-native-release ]]; then
+    checkpoint_command --check-genesis
+  fi
   timeout 120s "$work/validity-witness" "$work"
   timeout 4m "${compose[@]}" stop --timeout 45 "${nodes[@]}"
   if [[ "$mode" = capture ]]; then
@@ -149,8 +163,7 @@ if [[ "$capture" = true ]]; then
   fi
 elif [[ "$mode" = submit-native ]]; then
   devnet_command 20m submit-release "$work"
-  PYTHONPATH="$(dirname "$research"):$source_dir:$research/zeno-contract-authorization" \
-    timeout 10m python3 -B "$research/zeno-native-checkpoint/native_checkpoint.py" "$work" --check-views
+  checkpoint_command --check-views
 else
   devnet_command 18m "$mode" "$work"
 fi

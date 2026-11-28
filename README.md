@@ -30,6 +30,8 @@ The [live proof-bearing SubmitBatch experiment](research/zeno-validity-devnet/RE
 
 The [validity-backed regtest release](research/zeno-validity-devnet/README.md#verified-run) binds the accepted batch to a registered Bitcoin payout. The [offline release audit](research/zeno-release-audit/README.md) replays the archived evidence against the selected devnet checkpoints.
 
+The [native checkpoint experiment](research/zeno-native-checkpoint/README.md) verifies the selected devnet header and 30 successors on two local nodes. The [Praxis release statement](docs/praxis-release-statement.md) describes the evidence a later decryption witness would need.
+
 The execution replay fixture adds a second check before release. It rebuilds the devnet batches from their L1 inputs and compares the computed commitments with the proven Settlement entries. [Execution replay evidence](research/zeno-execution-replay/README.md)
 
 The Groth16 experiment proves the selected authorization call and its two state writes against a public statement derived from the recorded replay. [Authorization proof experiment](research/authorization-proof/README.md)

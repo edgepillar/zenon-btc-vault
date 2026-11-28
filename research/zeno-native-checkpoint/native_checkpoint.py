@@ -12,7 +12,7 @@ from urllib.error import URLError
 from urllib.request import ProxyHandler, Request, build_opener
 
 from regtest import RegtestError, require
-from regtest_release import b64, digest32, read_json, read_leaf, settlement_key, verify_eligible_batch, write_private
+from regtest_release import b64, digest32, read_json, read_leaf, release, settlement_key, verify_eligible_batch, write_private
 
 
 NODE_REVISION = "2835c436b197fece5c76adf4ba8dc1decca2e3ea"
@@ -155,10 +155,21 @@ def verify_conflicting_view_refusal(result, eligible):
         raise RegtestError("Conflicting native views were accepted")
 
 
-def attest(work, *, run_controls):
+def retain_checkpoint(work, result):
+    write_private(work / "native-checkpoint.json", (json.dumps(result, separators=(",", ":")) + "\n").encode("ascii"))
+    print(f"NATIVE_CHECKPOINT {result['selected']['height']} {result['cut']['height']} {result['cut']['hash']}", flush=True)
+
+
+def check_proposal_network(work):
     pending = read_json(work / "pending.json", 8192)
+    require(pending["chainId"] == 69 and pending["genesis"] == GENESIS,
+            "The validity proposal uses a different devnet")
+    return pending
+
+
+def attest(work, *, run_controls):
+    pending = check_proposal_network(work)
     commitment = b64(read_json(work / "proposal.json", 49_152)["commitment"])
-    require(pending["genesis"] == GENESIS, "The validity proposal uses a different genesis")
     _, eligible = verify_eligible_batch(work, commitment, pending)
     if run_controls:
         verify_early_refusal(eligible)
@@ -167,17 +178,37 @@ def attest(work, *, run_controls):
     if run_controls:
         verify_conflicting_view_refusal(result, eligible)
         result["controls"] = ["early-native-view-refused", "conflicting-native-view-refused"]
-    write_private(work / "native-checkpoint.json", (json.dumps(result, separators=(",", ":")) + "\n").encode("ascii"))
-    print(f"NATIVE_CHECKPOINT {result['selected']['height']} {result['cut']['height']} {result['cut']['hash']}", flush=True)
+    retain_checkpoint(work, result)
+
+
+def release_after_checkpoint(work, bitcoind):
+    check_proposal_network(work)
+    registration = read_json(work / "registration.json", 16_384)
+
+    def guard(eligible):
+        wait_for_cut(eligible["height"] + SUCCESSORS)
+        result = select_checkpoint(eligible)
+        retain_checkpoint(work, result)
+        return {"requiredSuccessors": SUCCESSORS, "cut": result["cut"]}
+
+    release(work, bitcoind, registration, checkpoint_guard=guard)
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("work", type=Path)
-    parser.add_argument("--check-views", action="store_true")
+    modes = parser.add_mutually_exclusive_group()
+    modes.add_argument("--check-genesis", action="store_true")
+    modes.add_argument("--check-views", action="store_true")
+    modes.add_argument("--bitcoind", type=Path)
     args = parser.parse_args()
     try:
-        attest(args.work, run_controls=args.check_views)
+        if args.check_genesis:
+            check_proposal_network(args.work)
+        elif args.bitcoind is not None:
+            release_after_checkpoint(args.work, args.bitcoind)
+        else:
+            attest(args.work, run_controls=args.check_views)
     except (RegtestError, OSError, ValueError, KeyError, TypeError) as exc:
         detail = str(exc) if isinstance(exc, RegtestError) else type(exc).__name__
         parser.exit(1, f"Native checkpoint verification failed: {detail}\n")

@@ -26,10 +26,24 @@ The [workflow](../../.github/workflows/zeno-native-checkpoint.yml) restores
 the public database checkpoint from PR 13 and submits the associated validity
 proof. Its source run, artifact digests and raw input digests are pinned. It
 then runs the native selector and retains the state and checkpoint records.
-This lane uses PR 13's demo authorization digest. It qualifies the native
-checkpoint for that batch. [Original batch proof](https://github.com/edgepillar/zenon-btc-vault/pull/13)
+The first run selected eligible Momentum 151 and verified the 31 signed
+headers through Momentum 181 on both nodes. Both nodes refused the early
+request, and an offline control refused a conflicting view at the same
+height. This run used PR 13's demo authorization digest.
+[Original batch proof](https://github.com/edgepillar/zenon-btc-vault/pull/13) ·
+[Run summary](https://github.com/edgepillar/zenon-btc-vault/actions/runs/46114229782#summary-140884312846) ·
+[Checkpoint record](https://github.com/edgepillar/zenon-btc-vault/actions/runs/46114229782/artifacts/15251645707)
+
+The [regtest release workflow](../../.github/workflows/zeno-validity-regtest-release.yml)
+uses the same selector on a new batch whose authorization binds a registered
+Bitcoin transaction. It rechecks the Bitcoin tip, refund window and
+registration after the native check and before publishing the signed bytes to
+Bitcoin Core regtest. This integration has its own acceptance run.
 
 The policy trusts the configured local full nodes, their devnet genesis and
-the pinned implementation. A live release policy needs authenticated node
-ownership, synchronization guarantees and explicit reconciliation of Bitcoin
-confirmation and refund. Mainnet consensus finality remains open.
+the pinned implementation. The 30 successors protect the selected eligible
+header under the pinned rollback rule. The cut root records the state both
+nodes observed at the time of release. A live release policy needs
+authenticated node ownership, synchronization guarantees and explicit
+reconciliation of Bitcoin confirmation and refund. Mainnet consensus
+finality remains open.
