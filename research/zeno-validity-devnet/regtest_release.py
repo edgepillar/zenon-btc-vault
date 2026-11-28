@@ -172,13 +172,16 @@ def verify_eligible_batch(work, proposal, pending):
     return accepted, eligible
 
 
-def release(work, bitcoind, registration):
+def release(work, bitcoind, registration, *, checkpoint_guard=None):
     withdrawal, target, commitment, proposal, pending = verify_contract(work, registration)
     accepted, eligible = verify_eligible_batch(work, proposal, pending)
     source = {"txid": withdrawal.txid, "vout": withdrawal.vout}
     with start_regtest(bitcoind, work / "bitcoin", resume_tip=registration["tip"]) as rpc:
         require(rpc.call("getblockhash", 0) == registration["genesis"] == REGTEST_GENESIS, "The Bitcoin genesis differs")
-        require(rpc.call("getblockcount") == registration["height"] < registration["refundHeight"], "The Bitcoin release window closed")
+        checkpoint = None if checkpoint_guard is None else checkpoint_guard(eligible)
+        tip = rpc.call("getblockchaininfo")
+        require(tip["bestblockhash"] == registration["tip"] and
+                tip["blocks"] == registration["height"] < registration["refundHeight"], "The Bitcoin release window changed")
         require(not rpc.call("getrawmempool"), "The Bitcoin mempool changed before release")
         signed = registration["signed"]
         checked = register_release(rpc, withdrawal, signed, vault_script=registration["vaultScript"])
@@ -203,6 +206,8 @@ def release(work, bitcoind, registration):
                         "payoutSats": withdrawal.amount_sats, "confirmations": payout["confirmations"],
                         "signedBytesSha256": sha256(bytes.fromhex(confirmed)).hexdigest()},
         }
+        if checkpoint is not None:
+            result["nativeCheckpoint"] = checkpoint
     write_private(work / "release.json", (json.dumps(result, separators=(",", ":")) + "\n").encode("ascii"))
     print(f"VALIDITY_REGTEST_RELEASE {txid} {block} {withdrawal.amount_sats}")
 

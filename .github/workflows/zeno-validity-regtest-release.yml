@@ -1,8 +1,8 @@
-name: Zeno validity-backed Bitcoin regtest release
+name: Zeno native checkpoint Bitcoin regtest release
 
 on:
   push:
-    branches: [prove-regtest-release-after-validity]
+    branches: [verify-native-release-checkpoint]
     paths:
       - .github/workflows/zeno-validity-regtest-release.yml
       - regtest.py
@@ -10,6 +10,8 @@ on:
       - research/zeno-contract-authorization/regtest_capture.py
       - research/zeno-validity-devnet/**
       - '!research/zeno-validity-devnet/*.md'
+      - research/zeno-native-checkpoint/**
+      - '!research/zeno-native-checkpoint/README.md'
 
 permissions:
   actions: read
@@ -107,7 +109,7 @@ jobs:
         shell: bash
         run: |
           umask 077
-          timeout --kill-after=60s 67m bash research/zeno-validity-devnet/run-devnet.sh capture-release "$VALIDITY_WORK"
+          timeout --kill-after=60s 67m bash research/zeno-validity-devnet/run-devnet.sh capture-native-release "$VALIDITY_WORK"
           python3 -B research/zeno-validity-devnet/regtest_release.py check-pending "$VALIDITY_WORK" "$VALIDITY_WORK/bitcoind"
           (
             cd "$VALIDITY_WORK"
@@ -149,8 +151,8 @@ jobs:
           repository: ${{ github.repository }}
           run-id: ${{ github.run_id }}
 
-      - name: Confirm the valid devnet batch and observe eligibility
-        timeout-minutes: 36
+      - name: Apply the native checkpoint gate before the registered regtest release
+        timeout-minutes: 46
         shell: bash
         run: |
           (
@@ -158,7 +160,7 @@ jobs:
             sha256sum --check --strict capture.sha256
             sha256sum --check --strict fixture.sha256
           )
-          timeout --kill-after=30s 34m bash research/zeno-validity-devnet/run-devnet.sh resume-release "$VALIDITY_WORK"
+          timeout --kill-after=30s 44m bash research/zeno-validity-devnet/run-devnet.sh resume-native-release "$VALIDITY_WORK"
 
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
@@ -167,17 +169,29 @@ jobs:
           if-no-files-found: error
           retention-days: 90
 
-      - name: Verify the state proofs and confirm the exact regtest transaction
+      - name: Bind the published release receipt to the native checkpoint
         timeout-minutes: 3
         shell: bash
         run: |
-          python3 -B research/zeno-validity-devnet/regtest_release.py release "$VALIDITY_WORK" "$VALIDITY_WORK/bitcoind"
           (
             cd "$VALIDITY_WORK"
-            sha256sum acceptance.json fixture.json release.json > release.sha256
+            jq -e --slurpfile checkpoint native-checkpoint.json '
+              $checkpoint[0] as $view |
+              .zeno.eligibleAt == $view.selected.height and .zeno.eligibleMomentum == $view.selected.hash and
+              .zeno.eligibleRoot == $view.selected.stateRoot and .nativeCheckpoint.cut == $view.cut and
+              .nativeCheckpoint.requiredSuccessors == 30 and .bitcoin.confirmations == 1
+            ' release.json
+            sha256sum acceptance.json fixture.json native-checkpoint.json release.json > release.sha256
             cat release.sha256
             printf 'VALIDITY_RELEASE_RECORD '
             cat release.json
+            printf '## Validity-backed regtest release with a native checkpoint\n\n' >> "$GITHUB_STEP_SUMMARY"
+            jq -r '
+              "- Settlement receipt at Momentum \(.zeno.acceptedAt) with an eligible entry at \(.zeno.eligibleAt)",
+              "- Native branch cut at Momentum \(.nativeCheckpoint.cut.height) with hash \(.nativeCheckpoint.cut.hash)",
+              "- Recorded Bitcoin Core confirmation of \(.bitcoin.payoutSats) satoshis in block \(.bitcoin.height)",
+              "- Bitcoin regtest transaction \(.bitcoin.txid)"
+            ' release.json >> "$GITHUB_STEP_SUMMARY"
           )
 
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
@@ -186,6 +200,7 @@ jobs:
           path: |
             ${{ env.VALIDITY_WORK }}/release.json
             ${{ env.VALIDITY_WORK }}/release.sha256
+            ${{ env.VALIDITY_WORK }}/native-checkpoint.json
           if-no-files-found: error
           retention-days: 90
 
