@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 from struct import error as StructError, pack, unpack
 import subprocess
+import sys
 
 from regtest import RegtestError, require
 from regtest_release import BECH32, GUEST_KEY, MODULE, b64, check_proof, digest32, read_leaf, word
@@ -215,7 +216,10 @@ def audit(directory, verifier, key):
             "The derived journal, input anchor or accepted proof digest differs")
     deadline = verify_settlement(acceptance, profile["checkpoints"], commitment, end)
     bitcoin = verify_target(evidence["release.json"], pending, acceptance, commitment, evidence["authorization.json"])
-    subprocess.run([str(verifier.resolve()), str(key.resolve()), journal], input=files["fixture.json"], check=True, timeout=30)
+    subprocess.run(
+        [str(verifier.resolve()), str(key.resolve()), journal],
+        input=files["fixture.json"], stdout=sys.stderr, check=True, timeout=30,
+    )
     return {
         "sourceRun": profile["run"], "sourceAttempt": profile["attempt"], "sourceRevision": profile["source"],
         "settlementProofs": 16, "contractProofs": 4, "journal": journal,
